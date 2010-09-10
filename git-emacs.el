@@ -626,9 +626,12 @@ properly expanded tree."
   "Execute 'git reset ARGS', return the result string."
   (apply #'git--exec-string "reset" args))
 
-(defsubst git--config (&rest args)
-  "Execute 'git config ARGS', return the result string."
-  (git--trim-string (apply #'git--exec-string "config" args)))
+(defun git--config (&rest args)
+  "Execute 'git config ARGS', return the result string. Return empty
+if git config fails (behaviour if unconfigured as of version 1.7.1)."
+  (condition-case nil
+      (git--trim-string (apply #'git--exec-string "config" args))
+    (error "")))
 
 (defun git--add (files)
   "Execute 'git add' with the sequence FILES."

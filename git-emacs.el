@@ -291,21 +291,6 @@ the standard output there. Returns the git return code."
       (decf end))
     (substring str 0 (+ end 1))))
 
-(defun git--pop-to-buffer(buffer)
-  "Wrapper around `pop-to-buffer', stores window configuration
-from before `pop-to-buffer' call for later restoration. Every
-buffer popped to with this function will have a local
-`kill-buffer-hook' to restore previous window configuration."
-  (let ((git--saved-window-configuration (current-window-configuration))
-        (popped-buffer (pop-to-buffer buffer)))
-    (with-current-buffer popped-buffer
-      (add-hook 'kill-buffer-hook
-                (lexical-let ((saved-config git--saved-window-configuration))
-                  #'(lambda()
-                      (set-window-configuration saved-config)
-                      )) nil t)) ;; !append local
-    popped-buffer))
-
 (defsubst git--join (seq &optional sep)
   "Joins the strings in SEQ with the SEP (defaults to blank)."
   (mapconcat #'identity seq (if sep sep " ")))
@@ -321,11 +306,12 @@ buffer popped to with this function will have a local
   (git--concat-path dir git--repository-dir))
 
 (defun git--quit-buffer ()
-  "Kill the current buffer, calls `kill-buffer'. Every
-  buffer popped with `git--pop-to-buffer' will restore previous
-  window-configuration when killed."
+  "Delete the current window, kill the current buffer."
   (interactive)
-  (kill-buffer))
+  (let ((buffer (current-buffer)))
+    ;; Emacs refuses to delete a "maximized" window (i.e. just 1 in frame)
+    (unless (one-window-p t) (delete-window))
+    (kill-buffer buffer)))
 
 (defsubst git--rev-parse (&rest args)
   "Execute 'git rev-parse ARGS', return result string."
@@ -1243,6 +1229,7 @@ Trim the buffer log, commit runs any after-commit functions."
   (let ((local-git--commit-after-hook
          (when (local-variable-p 'git--commit-after-hook)
            (cdr git--commit-after-hook)))) ; skip the "t" for local
+    (unless (one-window-p t) (delete-window))
     (kill-buffer git--commit-log-buffer)
 
     ;; hooks (e.g. switch branch)
@@ -1603,8 +1590,7 @@ Returns the buffer."
       (add-hook 'kill-buffer-hook
                 #'(lambda()
                     (ignore-errors
-                      (when git--commit-last-diff-file-buffer
-                          (kill-buffer git--commit-last-diff-file-buffer))))
+                      (kill-buffer git--commit-last-diff-file-buffer)))
                 t t)                    ; append, local
 
       ;; Set cursor to message area
@@ -1617,7 +1603,7 @@ Returns the buffer."
 
       (message "%sType 'C-c C-c' to commit, 'C-c C-q' to cancel"
                (or prepend-status-msg "")))
-    (git--pop-to-buffer buffer)
+    (pop-to-buffer buffer)
     buffer))
 
 (defun git-commit-file (&optional amend)
@@ -2044,7 +2030,7 @@ buffer instead of a new one."
         (apply #'vc-do-command buffer 'async "git" nil "diff"
                (append diff-qualifier (list "--") rel-filenames)))
       (vc-exec-after `(goto-char (point-min))))
-    (git--pop-to-buffer buffer)))
+    (pop-to-buffer buffer)))
 
 ;;-----------------------------------------------------------------------------
 ;; branch mode
@@ -2217,7 +2203,7 @@ preserve the cursor position."
       (git--branch-mode-refresh t)
       )
     ;; pop up
-    (git--pop-to-buffer buffer)
+    (pop-to-buffer buffer)
     (fit-window-to-buffer)
     (run-hooks 'git--branch-mode-hook)
     buffer))
@@ -2243,7 +2229,9 @@ anymore; if unspecified, we operate on the current buffer."
               (and was-branch-switch
                    (eq 'on-branch-switch
                        git-branch-buffer-closes-after-action)))
-          (kill-buffer buffer)
+          (progn
+            (delete-windows-on buffer)
+            (kill-buffer buffer))
         ;; Just refresh. If this was a branch switch is seems OK to move
         ;; the cursor to the new branch.
         (with-current-buffer buffer
@@ -2548,7 +2536,7 @@ that variable in .emacs.
       (set (make-local-variable 'font-lock-defaults)
            (list 'git--stash-list-font-lock-keywords t))
       (when global-font-lock-mode (font-lock-mode t)))
-    (git--pop-to-buffer buffer)))
+    (pop-to-buffer buffer)))
 
 
 (defvar git--stash-history nil "History for git-stash")
@@ -2592,6 +2580,7 @@ usual pre / post work: ask for save, ask for refresh."
                      (changes-pending "save") (stashes-exist "pop") (t ""))))
                (setq cmd (read-string "git stash >> "
                                       suggested-cmd 'git--stash-history)))))
+         (delete-windows-on buffer)
          (kill-buffer buffer))))
   (message "%s" (git--trim-string (git--exec-string "stash" cmd)))
   (redisplay t)

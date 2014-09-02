@@ -923,16 +923,17 @@ SIZE is 5, but it will be longer if needed (due to conflicts)."
             (setq current-branch branch)))))
     (cons (nreverse branches) current-branch)))
 
-(defun git--cat-file (buffer-name &rest args)
+(defun git--cat-file (buffer-name actual-name &rest args)
   "Execute 'git cat-file ARGS' and return a new buffer named BUFFER-NAME
-with the file content"
+with the file content. ACTUAL-NAME should be the filename that should be
+considered when setting the mode (revision specs can trip auto-mode)."
   (let ((buffer (get-buffer-create buffer-name)))
     (with-current-buffer buffer
       (setq buffer-read-only nil)
       (erase-buffer)
 
       ;; auto mode, for highlighting
-      (let ((buffer-file-name buffer-name)) (set-auto-mode))
+      (let ((buffer-file-name actual-name)) (set-auto-mode))
       (apply #'git--exec-buffer "cat-file" args)
 
       ;; set buffer readonly & quit
@@ -1289,6 +1290,7 @@ buffer. If there is no common base, returns nil."
          (base-fileinfo (cdr-safe (assq 1 stage-and-fileinfo)))
          (base-buffer (when base-fileinfo
                         (git--cat-file (format "*Base*: %s" rel-filename)
+                                       rel-filename
                                        "blob"
                                        (git--fileinfo->sha1 base-fileinfo)))))
     base-buffer))
@@ -1321,7 +1323,7 @@ buffer revert. On conflicts, pulls up a status buffer"
 
 (defun git--resolve-merge-buffer (&optional success-callback)
   "Implementation of resolving a conflicted buffer, which must be current.
-If SUCCESS-CALLBACk is specified, it will be called if the merge is successful
+If SUCCESS-CALLBACK is specified, it will be called if the merge is successful
 and the user accepts the result."
   (interactive)
 
@@ -1951,11 +1953,12 @@ of hook."
 
 	;; get relative to git root dir
 	(cd (git--get-top-dir (file-name-directory abspath)))
-	(let ((filerev (concat rev (file-relative-name abspath))))
-              (setq buf2 (git--cat-file (if (equal rev ":")
-                                            (concat "<index>" filerev)
-                                          filerev)
-                                        "blob" filerev)))))
+	(let* ((rel-filename (file-relative-name abspath))
+               (filerev (concat rev rel-filename)))
+          (setq buf2 (git--cat-file (if (equal rev ":")
+                                        (concat "<index>" filerev)
+                                      filerev)
+                                    rel-filename "blob" filerev)))))
     (when (eq 0 (compare-buffer-substrings buf1 nil nil buf2 nil nil))
       (kill-buffer buf2)
       (error "No differences vs. %s"

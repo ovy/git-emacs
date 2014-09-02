@@ -252,8 +252,8 @@
       (unwind-protect
           (save-window-excursion
             (git-branch)
-            (assert (looking-at "master"))
             (assert (string= (buffer-string) "   aa\n * master\n   foobar\n"))
+            (assert (looking-at "master"))
             (assert (equal "master" (git-branch-mode-selected)))
             (forward-line)  ;; next-line errors out in batch for some reason
             (assert (equal "foobar" (git-branch-mode-selected)))

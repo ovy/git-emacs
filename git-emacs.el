@@ -2183,9 +2183,8 @@ preserve the cursor position."
 
     ;; reposition
     (ignore-errors (goto-line line-number-after))
-    (if (> (line-number-at-pos) (length branch-list))
-        (previous-line)
-      (next-line 0))   ;; side-effect: moves to goal-column :)
+    (when (> (line-number-at-pos) (length branch-list)) (forward-line -1))
+    (move-to-column goal-column)
 
     (setq git--branch-mode-branch-list branch-list)))
 

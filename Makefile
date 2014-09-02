@@ -1,13 +1,8 @@
 # Simple makefile. We make no particular effort to optimize dependencies,
 # since compiling all files in a run is very fast anyway.
 
-# This might not be needed on newer emacs versions, but it doesn't hurt.
-# Note: newer git doesn't ship vc-git since it's been included in emacs,
-# but that's only v23+. Oops. If that's your situation, add a path to
-# your vc-git.el here (I store mine in .emacs.d now).
-VC_GIT_PATH="-L /usr/share/doc/git-core/contrib/emacs -L ~/.emacs.d/"
-
-EMACS_BATCH=emacs -Q --batch "$(VC_GIT_PATH)" -L .
+# Careful not to put your own "production" version in -L, nullifying the tests.
+EMACS_BATCH=emacs -Q --batch -L .
 
 .PHONY: all compile tags test clean
 
@@ -26,9 +21,11 @@ test: *.el
 	@echo; echo ">>> Running tests"
 	$(EMACS_BATCH) -l git--test.el -f git-regression
 	@echo; echo "Testing autoloads..."
-	$(EMACS_BATCH) --eval "(require 'git-emacs-autoloads)" \
+# 	Don't ask about the (point). It's a weirdness with EmacsMac --eval, I
+# 	get "end of file during parsing" if the first sexpr has quotes. Ugh.
+	$(EMACS_BATCH) --eval "(point) (require 'git-emacs-autoloads)" \
 	  --visit "Makefile" \
-	  --eval "(unless (functionp 'git-diff-baseline) (error \"autoload malfunctioned\"))"
+	  --eval "(point) (unless (functionp 'git-diff-baseline) (error \"autoload malfunctioned\"))"
 
 clean:
 	rm -f *.elc

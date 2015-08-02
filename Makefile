@@ -2,7 +2,7 @@
 # since compiling all files in a run is very fast anyway.
 
 # Careful not to put your own "production" version in -L, nullifying the tests.
-EMACS_BATCH=emacs -Q --batch -L .
+EMACS_BATCH=emacs -Q --batch -L . -f toggle-debug-on-error
 
 .PHONY: all compile tags test clean
 
@@ -10,6 +10,7 @@ all: compile tags test
 
 compile: *.el
 	@echo; echo ">>> Compiling"
+	@echo ">>> [Ignore warnings about flet being obsolete until we get a good replacement]"
 	rm -f *.elc
 	$(EMACS_BATCH) -f batch-byte-compile *.el
 

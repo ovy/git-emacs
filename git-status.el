@@ -72,7 +72,6 @@
 (git--face added      "tomato" (:bold t) "cyan"    (:bold t))
 (git--face deleted    "red"    (:bold t) "red"     (:bold t))
 (git--face staged     "yellow" (:bold t) "yellow"  (:bold t))
-(git--face log-line   "gray"   (:bold t :italic t) "gray"(:bold t :italic t))
 
 
 ;;-----------------------------------------------------------------------------

@@ -151,6 +151,8 @@ the signature of `completing-read'.")
     :group 'git-emacs-faces))
 
 (git--face bold       "tomato" (:bold t) "tomato"  (:bold t))
+;; We use this one in commit buffers.
+(git--face log-line   "gray"   (:bold t :italic t) "gray"(:bold t :italic t))
 
 (defsubst git--bold-face (str) (propertize str 'face 'git--bold-face))
 
@@ -1459,20 +1461,23 @@ the user quits or the merge is successfully committed."
 ;;-----------------------------------------------------------------------------
 ;; High-level commit functions.
 ;;-----------------------------------------------------------------------------
-
 (defconst git--commit-status-font-lock-keywords
   '(("^#\t\\([^:]+\\): +[^ ]+$"
      (1 'git--bold-face))
     ("^# \\(Branch\\|Author\\|Email\\|Date\\|Amend\\) +:" (1 'git--bold-face))
-    ("^# \\(-----*[^-]+-----*\\).*$" (1 'git--log-line-face))))
+    ("^# \\(-----*[^-]+-----*\\).*$" (1 'git--log-line-face))
+    ;; The below highlights "modified", etc. If it stops working (which it has
+    ;; in the past), also change buttonize-filenames below.
+    ("^#?\t\\([[:alnum:] ]+:\\) " (1 'git--bold-face))))
 ;; (makunbound 'git--commit-status-font-lock-keywords)
+
 
 (define-button-type 'git--commit-diff-committed-link
   'help-echo "mouse-2, RET: view changes that will be committed"
-  'action 'git--commit-diff-file)
+  'action 'git--commit-diff-file 'follow-link t)
 (define-button-type 'git--commit-diff-uncomitted-link
   'help-echo "mouse-2, RET: view changes that will NOT be committed"
-  'action 'git--commit-diff-file)
+  'action 'git--commit-diff-file 'follow-link t)
 
 (defun git--commit-buttonize-filenames (single-block type)
   "Makes clickable buttons (aka hyperlinks) from filenames in git-status
@@ -1482,7 +1487,7 @@ when it would move forward more than one line after a filename. The buttons
 created are of the given TYPE. Leaves the cursor at the end of the last
 button, or at the end of the file if it didn't create any."
   (let (last-match-pos)
-    (while (and (re-search-forward "^#\t[^:]+: +\\(.*\\)" nil t)
+    (while (and (re-search-forward "^#?\t[[:alnum:] ]+: +\\(.*\\)" nil t)
                 (or (not single-block)
                     (not last-match-pos)
                     (<= (count-lines last-match-pos (point)) 2)))

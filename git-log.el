@@ -60,6 +60,8 @@
   (define-key map "v" 'git-log-view-revert)
   (define-key map "t" 'git-log-view-tag)
 
+  (define-key map "f" 'git-log-view-visit-file)
+
   (define-key map "g" 'git-log-view-refresh)
   (define-key map "q" 'git--quit-buffer))
 
@@ -83,6 +85,8 @@
    ["Cherry-pick" git-log-view-cherry-pick t]
    ["Revert Commit" git-log-view-revert t]
    ["Tag this Commit..." git-log-view-tag t]
+   "---"
+   ["Visit File at this Commit" git-log-view-visit-file t]
    "---"
    ["Refresh" git-log-view-refresh t]
    ["Quit" git--quit-buffer t]))
@@ -136,6 +140,13 @@ default-directory is inside the repo."
       (set (make-local-variable 'git-log-view-qualifier) log-qualifier)
       (set (make-local-variable 'git-log-view-start-commit) start-commit)
       (set (make-local-variable 'git-log-view-filenames) rel-filenames)
+      ;; Let base log-view mode know if we're taking about different files
+      (set (make-local-variable 'log-view-per-file-logs) nil)
+      (set (make-local-variable 'log-view-vc-fileset)
+           ;; The two empty strings hack may look disgusting, but it makes
+           ;; log-view behave right; in particular refusing to do file
+           ;; operations. In my defense, that's very antiquated code.
+           (or files '("" "")))
       ;; Subtle: the buffer may already exist and have the wrong directory
       (cd saved-default-directory)
       ;; vc-do-command does almost everything right. Beware, it misbehaves
@@ -176,33 +187,39 @@ using the `git-log-view-cherrypick'."
 ;; Take advantage of the nice git-log-view from the command line.
 ;; Recipes:
 ;; function gl() { gnuclient --batch --eval "(git-log-from-cmdline \"$DISPLAY\" \"$(pwd)\" \"$1\")"; }
+;; or substitute "emacsclient -e" for "gnuclient --batch"
 ;;
 ;; If you prefer a separate emacs instance:
 ;; function gl() { emacs -l ~/.emacs --eval "(git-log-from-cmdline nil nil \"$1\")"; }
 ;;
 ;; Then you can just run "gl" or "gl another-branch", for example.
 (defun git-log-from-cmdline (&optional display directory start-commit)
-  "Launch a git log view from emacs --eval or gnuclient --eval. If DISPLAY
-is specified, create a frame on the specified display. If DIRECTORY is
-specified, do git log for that directory (a good idea in gnuclient)
-. If START-COMMIT if specified, log starting backwards from that commit, e.g.
-a branch."
+  "Launch a git log view from emacs --eval or gnuclient
+--eval. If DISPLAY is specified, create a frame on the specified
+display; "" means current. If DIRECTORY is specified, do git log
+for that directory (a good idea in gnuclient) . If START-COMMIT
+if specified, log starting backwards from that commit, e.g.  a
+branch."
   (let ((default-directory (or directory default-directory))
-        (frame (when display (select-frame (make-frame-on-display display)))))
+        (frame (when display
+                 (select-frame
+                  (make-frame-on-display
+                   (unless (string= display "") display))))))
+    (when frame (x-focus-frame frame))
     (switch-to-buffer
      (git--log-view nil (when (> (length start-commit) 0) start-commit) t))
-    (when display
+    (when frame
       ;; Delete the frame on quit if we created it and nothing else displayed
       (add-hook 'kill-buffer-hook
               (lexical-let ((git-log-gnuserv-frame frame))
                 #'(lambda()
                     (dolist (window (get-buffer-window-list (current-buffer)))
-                      (when (and (eq (next-window window) window)
+                      (when (and (one-window-p t)
                                  (eq (window-frame window)
                                      git-log-gnuserv-frame))
                           (delete-frame (window-frame window))))))
               t t))                      ; hook is append, local
-  ""))
+  (buffer-name)))   ;; emacsclient prints this
 
 ;; Actions
 (defun git-log-view-checkout ()
@@ -289,5 +306,36 @@ the working dir."
 
   (interactive)
   (git-tag tag-name (git--abbrev-commit (log-view-current-tag))))
+
+
+(defun git--log-view-need-filename (prompt &optional allow-nonexisting)
+  "If this view is not for a single file, prompt for one with PROMPT.
+Set ALLOW-NONEXISTING if the file could be from a different revision, no longer
+existing in current tree."
+  (if (eq 1 (length git-log-view-filenames))
+      (elt git-log-view-filenames 0)
+    (read-file-name prompt nil nil (not allow-nonexisting) ""
+                    #'(lambda (fn) (> (length fn) 0)))))
+
+
+(defun git-log-view-visit-file (&optional filename commit)
+  "Visits a file from the commit that the cursor is on in
+`view-mode'. If this view is not for a single file, prompts for
+one, autocompleting from the checked out tree but not requiring
+an existing file in case it no longer exists in the current
+version. Non-interactively, the parameters FILENAME and COMMIT
+are self-explanatory strings. "
+  (interactive
+   (let ((short-commit (git--abbrev-commit (log-view-current-tag))))
+     (list (git--log-view-need-filename (format "File @ %s: " short-commit) t)
+           short-commit)))
+  ;; vc-find-revision is retarded: it *actually* creates a file!
+  (let* ((default-directory (or (file-name-directory filename)
+                                default-directory))
+         (base-filerev (concat commit ":" (file-name-nondirectory filename)))
+         (full-filerev (concat commit ":" (file-relative-name
+                                        filename (git--get-top-dir)))))
+    (view-buffer (git--cat-file base-filerev filename "blob" full-filerev)
+                 'kill-buffer-if-not-modified)))
 
 (provide 'git-log)

@@ -938,22 +938,21 @@ considered when setting the mode (revision specs can trip auto-mode)."
   (let ((buffer (get-buffer-create buffer-name)))
     (with-current-buffer buffer
       (setq buffer-read-only nil)
+      (buffer-disable-undo)
       (erase-buffer)
 
       ;; auto mode, for highlighting
       (let ((buffer-file-name actual-name)) (set-auto-mode))
-      (apply #'git--exec-buffer "cat-file" args)
-
-      ;; set buffer readonly & quit
-      (setq buffer-read-only t)
-
-      ;; Failed?
-      (goto-char (point-min))
-      (when (looking-at "^\\([Ff]atal\\|[Ff]ailed\\|[Ee]rror\\):")
+      (unless (eq 0 (apply #'git--exec-buffer "cat-file" args))
         (let ((msg (buffer-string)))
           (kill-buffer nil)
           (setq buffer nil)
-          (error "%s" (git--trim-tail msg)))))
+          (error "git: %s" (git--trim-string msg))))
+
+      ;; set buffer readonly & unset modification flag.
+      (setq buffer-read-only t)
+      (buffer-enable-undo)
+      (set-buffer-modified-p nil))
     buffer))
 
 (defun git--select-branch (&rest excepts)

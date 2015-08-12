@@ -209,21 +209,27 @@ INFILE. Reeturns git's exit code."
 
 (defun git--exec-pipe (cmd input &rest args)
   "Execute 'git cmd args', piping INPUT (which can be a buffer or string).
-Return result string."
-  (with-output-to-string
-    (with-current-buffer standard-output
-      (let ((tmp (make-temp-file "git-emacs-tmp")))
-        (unwind-protect
-            (progn
-              (if (bufferp input)
-                  (with-current-buffer input
-                    (write-file tmp))
-                (with-temp-buffer
-                  (insert input)
-                  (write-file tmp)))
-              (message "")              ;hide write to file message
-              (apply #'git--exec cmd t tmp args))
-          (delete-file tmp))))))
+Return result string. Errors with that result string if git failed."
+  (let* ((git-exit-code 0)
+         (git-output
+          (with-output-to-string
+            (with-current-buffer standard-output
+              (let ((tmp (make-temp-file "git-emacs-tmp")))
+                (unwind-protect
+                    (progn
+                      (if (bufferp input)
+                          (with-current-buffer input
+                            (write-file tmp))
+                        (with-temp-buffer
+                          (insert input)
+                          (write-file tmp)))
+                      (message "")              ;hide write to file message
+                      (setq git-exit-code
+                            (apply #'git--exec cmd t tmp args)))
+                  (delete-file tmp)))))))
+    (unless (eq git-exit-code 0)
+      (error "git %s: %s" cmd (git--trim-string git-output)))
+    git-output))
 
 (defsubst git--exec-buffer (cmd &rest args)
   "Execute 'git' within the buffer. Return the exit code."

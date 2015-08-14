@@ -13,6 +13,7 @@
 (define-key global-map git-keyboard-prefix 'git-global-map)
 
 (define-key git-global-map "a" 'git-add)
+(define-key git-global-map "A" 'git-add-new)
 (define-key git-global-map "b" 'git-branch)
 
 (define-prefix-command 'git--commit-map nil "Commit")
@@ -53,9 +54,8 @@
 (define-key git-global-map "s" 'git-status)
 (define-key git-global-map "." 'git-cmd)
 
-(easy-menu-add-item nil '("tools" "vc") "---")
-(easy-menu-add-item nil '("tools" "vc")
-  `("Git"
+(easy-menu-add-item nil '("tools")
+  `("Git-emacs"
     ("Add to Index"
      ["Current File" git-add t]
      ["Select Changes in Current File..." git-add-interactively t]
@@ -84,7 +84,10 @@
     ["Stash..." git-stash t]
     ["Status" git-status t]
     ["Grep..." git-grep t]
-    ["Git Command..." git-cmd t]))
+    ["Git Command..." git-cmd t])
+  "vc")
+;(easy-menu-add-item nil '("tools") "---" "Git-emacs")
+
 
 
 (provide 'git-global-keys)

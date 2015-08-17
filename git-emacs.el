@@ -111,7 +111,8 @@
   "Launch the git log view for whole repository" t)
 (autoload 'git-log-other "git-log"
   "Launch the git log view for an arbitrary branch or tag" t)
-
+(autoload 'git-log-dontpanic-reflog "git-log"
+  "Launch a specialized log view for finding log commits with reflog" t)
 
 
 ;;-----------------------------------------------------------------------------
@@ -321,9 +322,9 @@ the standard output there. Returns the git return code."
     (unless (one-window-p t) (delete-window))
     (kill-buffer buffer)))
 
-(defsubst git--rev-parse (&rest args)
+(defun git--rev-parse (&rest args)
   "Execute 'git rev-parse ARGS', return result string."
-  (apply #'git--exec-string "rev-parse" args))
+  (git--trim-string (apply #'git--exec-string "rev-parse" args)))
 
 (defmacro git-in-lowest-existing-dir (dir &rest BODY)
   "Runs \"BODY\" with `default-directory' set to the nearest
@@ -882,12 +883,20 @@ only checks the specified files. The list is sorted by filename."
 (defsubst git--branch (&rest args)
   (apply #'git--exec-string "branch" args))
 
-(defun git--abbrev-commit(commit &optional size)
-  "Returns a short yet unambiguous SHA1 checksum for a commit. The default
-SIZE is 5, but it will be longer if needed (due to conflicts)."
+(defun git--abbrev-commit(&optional commit size)
+  "Returns a short yet unambiguous SHA1 checksum for a COMMIT. The default
+SIZE is 5, but it will be longer if needed (due to conflicts). The default
+COMMIT is HEAD."
   (git--trim-string
    (git--exec-string "rev-list" "--abbrev-commit"  "--max-count=1"
-                     (format "--abbrev=%d" (or size 5)) commit)))
+                     (format "--abbrev=%d" (or size 5)) (or commit "HEAD"))))
+
+(defun git--describe(commit &rest flags)
+  "Returns the result of 'git describe FLAGS... COMMIT', which you can use to
+find alternate names or search for the location of a commit."
+  (git--trim-string (apply #'git--exec-string "describe"
+                           (append flags (list commit)))))
+
 
 (defsubst git--today ()
   (time-stamp-string "%:y-%02m-%02d %02H:%02M:%02S"))

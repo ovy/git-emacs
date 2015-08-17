@@ -75,18 +75,23 @@
      ["Index" git-diff-all-index t]
      ["Baseline" git-diff-all-baseline t]
      ["Other..." git-diff-all-other t])
+    "---"
     ["Log for Entire Project" git-log t]
     ["Log for Current File" git-log-files t]
     ["Log for Branch or Tag..." git-log-other t]
-    ["Branch List" git-branch t]
+    ["Find Lost Commits with Reflog..." git-log-dontpanic-reflog t]
+    "---"
     ["Merge (start or continue)..." git-merge-next-action t]
     ["Reset..." git-reset t]
     ["Stash..." git-stash t]
+    "---"
+    ["Branch View" git-branch t]
     ["Status" git-status t]
     ["Grep..." git-grep t]
     ["Git Command..." git-cmd t])
   "vc")
-;(easy-menu-add-item nil '("tools") "---" "Git-emacs")
+;; Eval below to start over (then eval-buffer).
+;; (makunbound 'git-global-map)
 
 
 

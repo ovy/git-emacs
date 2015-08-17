@@ -88,19 +88,23 @@
    "---"
    ["Visit File at this Commit" git-log-view-visit-file t]
    "---"
+   ["Find Lost Commits with Reflog..." git-log-dontpanic-reflog t]
    ["Refresh" git-log-view-refresh t]
    ["Quit" git--quit-buffer t]))
-
+;; Eval below to start over (then eval-buffer).
+;; (makunbound 'git-log-view-mode-map)
 
 ;; Extra navigation
 ;; Right now this just moves between merges, but it would be nice to move
 ;; to the next/prev commit by a different author. But it's harder than a
 ;; simple RE.
-(defvar git-log-view-interesting-commit-re "^Merge[: ]?"
+(defvar git-log-view-interesting-commit-re
+  "^Merge[: ]?\\|^ *This reverts commit "
   "Regular expression defining \"interesting commits\" for easy navigation")
 (easy-mmode-define-navigation
  git-log-view-interesting-commit git-log-view-interesting-commit-re
  "interesting commit")
+;; (makunbound 'git-log-view-interesting-commit-re)
 
 
 ;; Implementation
@@ -109,15 +113,37 @@
 (defvar git-log-view-qualifier nil
   "A short string representation of `git-log-view-filenames', e.g. \"2 files\"")
 (defvar git-log-view-start-commit nil
-  "Records the starting commit (e.g. branch name) of the current log view")
+  "Records the starting commit (e.g. branch name) of the current log view.
+Note that this is a logical 'start' as opposed to a fully fixed commit,
+so a refresh picks up a new state of the branch or tag, if changed.
+See `git-log-view-displayed-commit-id'")
+(defvar git-log-view-displayed-commit-id nil
+  "Records the starting point of the history that is *actually* displayed.
+If branch has moved since, `git-log-view-start-commit' would track with it,
+which might be misleading. A refresh operation briefly displays this, for
+example, to allow the user to go back to the old history. This should be
+a full id.")
+
+(defvar git-log-view-before-log-hooks nil
+  "Hooks to run in `git-log-view-mode' just before the log is
+actually inserted. May explicitly modify variables like
+`git-log-view-start-commit', `git-log-view-displayed-commit-id',
+set keys, insert text, etc.")
 
 
-(defun git--log-view (&optional files start-commit dont-pop-buffer)
+(defun git--log-view (&optional files start-commit dont-pop-buffer
+                                use-buffer)
   "Show a log window for the given FILES; if none, the whole
-repository. If START-COMMIT is nil, use the current branch, otherwise the
-given commit. Assumes it is being run from a buffer whose
-default-directory is inside the repo."
-  (let* ((rel-filenames (mapcar #'file-relative-name files))
+repository. If START-COMMIT is nil, use the current branch,
+otherwise the given commit. DONT-POP-BUFFER should be set to t if
+the caller will do the displaying themselves. USE-BUFFER means to
+use an existing buffer; pass a string to leave the name
+unchanged, or a buffer to have log-view change it.
+
+Assumes it is being run from a buffer whose default-directory is
+inside the repo."
+
+ (let* ((rel-filenames (mapcar #'file-relative-name files))
          (log-qualifier (case (length files)
                                (0 (abbreviate-file-name (git--get-top-dir)))
                                (1 (first rel-filenames))
@@ -127,18 +153,21 @@ default-directory is inside the repo."
                                   (if start-commit (format " from %s"
                                                            start-commit)
                                     "")))
-         (buffer (get-buffer-create log-buffer-name))
+         (buffer (get-buffer-create (or use-buffer log-buffer-name)))
          (saved-default-directory default-directory))
-    (with-current-buffer buffer
+   (with-current-buffer buffer
+     (when (bufferp use-buffer) (rename-buffer log-buffer-name))
+      (setq prev-commit-id git-log-view-displayed-commit-id)
       ;; Subtle: a previous git process might still be running
       (let ((proc (get-buffer-process (current-buffer))))
         (when proc (delete-process proc)))
-      (buffer-disable-undo)
-      (let ((buffer-read-only nil)) (erase-buffer))
       (git-log-view-mode)
-      ;; Tell git-log-view-mode what this log is all about
+      (buffer-disable-undo)
+                                        
+      ;; Tell git-log-view-refresh what this log is all about
       (set (make-local-variable 'git-log-view-qualifier) log-qualifier)
       (set (make-local-variable 'git-log-view-start-commit) start-commit)
+      (set (make-local-variable 'git-log-view-displayed-commit-id) nil)
       (set (make-local-variable 'git-log-view-filenames) rel-filenames)
       ;; Let base log-view mode know if we're taking about different files
       (set (make-local-variable 'log-view-per-file-logs) nil)
@@ -147,19 +176,42 @@ default-directory is inside the repo."
            ;; log-view behave right; in particular refusing to do file
            ;; operations. In my defense, that's very antiquated code.
            (or files '("" "")))
+
       ;; Subtle: the buffer may already exist and have the wrong directory
       (cd saved-default-directory)
-      ;; vc-do-command does almost everything right. Beware, it misbehaves
-      ;; if not called with current buffer (undoes our setup)
-      (apply #'vc-do-command buffer 'async "git" nil "log"
-             (append (when start-commit (list start-commit))
-                     (list "--")
-                     rel-filenames))
-      ;; vc sometimes goes to the end of the buffer, for unknown reasons
-      (vc-exec-after `(goto-char (point-min))))
-    (if dont-pop-buffer
-        buffer
-      (pop-to-buffer buffer))))
+      (git-log-view-refresh))
+   (if dont-pop-buffer
+       buffer
+     (pop-to-buffer buffer))))
+
+(defun git-log-view-refresh (&optional is-explicit-refresh)
+  "Refreshes a git-log buffer. If called interactively or
+IS-EXPLICIT-REFRESH is set, assumes the user requested it directly."
+  (interactive "p")
+  (let ((buffer-read-only nil)) (erase-buffer))
+  (run-hooks 'git-log-view-before-log-hooks)
+  (let* ((the-start-commit git-log-view-start-commit)
+         (new-commit-id (git--rev-parse (or the-start-commit "HEAD"))))
+    ;; Allow recovery from refresh "accidents" during branch surgery.
+    (when (and git-log-view-displayed-commit-id is-explicit-refresh
+               (not (equal git-log-view-displayed-commit-id new-commit-id)))
+      (message "You can recover the previously displayed log as '%s'"
+               (git--abbrev-commit git-log-view-displayed-commit-id)))
+    (setq git-log-view-displayed-commit-id new-commit-id)
+    ;; vc-do-command does almost everything right. Beware, it misbehaves
+    ;; if not called with current buffer (undoes our setup)
+    (apply #'vc-do-command (current-buffer) 'async "git" nil "log"
+           (append (list new-commit-id) (list "--") git-log-view-filenames))
+    )
+  
+  ;; vc sometimes goes to the end of the buffer, for unknown reasons
+  (vc-exec-after `(goto-char (point-min))))
+
+
+(defun git-log-view-single-file-p ()
+  "Returns true if the current git-log buffer is for a single file"
+  (when (boundp 'git-log-view-filenames)
+    (= 1 (length git-log-view-filenames))))
 
 ;; Entry points
 (defun git-log-files ()
@@ -172,9 +224,8 @@ git-status-mode."
                    (list buffer-file-name))))
  
 (defun git-log ()
-  "Launch the git log view for the whole repository"
+  "Launch the git log view for the whole repository."
   (interactive)
-  ;; TODO: maybe ask user for a git repo if they're not in one
   (git--log-view))
 
 (defun git-log-other (&optional commit)
@@ -283,7 +334,7 @@ If a region is active, diff the first and last commits in the region."
 the working dir."
   (interactive)
   (let* ((commit (git--abbrev-commit (log-view-current-tag))))
-    (if (eq 1 (length git-log-view-filenames))
+    (if (git-log-view-single-file-p)
         (git--diff (first git-log-view-filenames)
                    (concat commit ":" ))
       (git--diff-many git-log-view-filenames commit nil))))
@@ -295,11 +346,6 @@ the working dir."
     (when (y-or-n-p (format "Revert %s? " commit))
       (git-revert commit))))
 
-(defun git-log-view-refresh ()
-  "Refresh log view"
-  (interactive)
-  (unless (boundp 'git-log-view-start-commit) (error "Not in git log view"))
-  (git--log-view git-log-view-filenames git-log-view-start-commit))
 
 (defun git-log-view-tag (&optional tag-name)
   "Create a new tag for commit that the cursor is on."
@@ -312,7 +358,7 @@ the working dir."
   "If this view is not for a single file, prompt for one with PROMPT.
 Set ALLOW-NONEXISTING if the file could be from a different revision, no longer
 existing in current tree."
-  (if (eq 1 (length git-log-view-filenames))
+  (if (git-log-view-single-file-p)
       (elt git-log-view-filenames 0)
     (read-file-name prompt nil nil (not allow-nonexisting) ""
                     #'(lambda (fn) (> (length fn) 0)))))
@@ -337,5 +383,103 @@ are self-explanatory strings. "
                                         filename (git--get-top-dir)))))
     (view-buffer (git--cat-file base-filerev filename "blob" full-filerev)
                  'kill-buffer-if-not-modified)))
+
+
+(defvar-local git-log-reflog-lines nil "Data for reflog buffers (vector)")
+(defvar-local git-log-reflog-i nil "Current position of a reflog buffer.")
+(defvar git-log-reflog-lines-setup nil "Used temporarily during reflog setup.")
+
+(defun git-log-dontpanic-reflog (&optional states-of)
+  "Pulls up a specialized log view for walking the reflog to
+find lost or endangered commits. Prompts for a branch name or
+similar to track (STATES-OF), allowing \"*all*\" as an option to
+track everything known to reflog (i.e. recent repo changes)."
+  (interactive
+   (list (git--select-revision
+          "Find recent states of:" '("HEAD" "*all*"))))
+  (let* ((default-directory (git--get-top-dir-or-prompt "Which repository: "))
+         (scope (if (or (null states-of) (string= states-of "*all*")) "--all"
+                  states-of))
+         (reflog-lines
+          (split-string
+           (git--exec-string "reflog" "--pretty=format:%H\t%gd\t%gs" scope)
+           "\n" t))
+         (buffer-name
+          (format "git reflog: %s for %s" 
+                  (abbreviate-file-name default-directory)
+                  (if (string= "--all" scope) "all refs" scope)))
+         (git-log-view-mode-hook git-log-view-mode-hook)       ; save
+         (git-log-reflog-lines-setup (vconcat reflog-lines)))
+    (unless reflog-lines
+      (error "\"git reflog\" returned nothing. Try command line."))
+    (add-hook 'git-log-view-mode-hook 'git--log-reflog-setup)
+    (git--log-view nil nil nil buffer-name)))
+
+  
+(defun git--log-reflog-setup ()
+  (set (make-local-variable 'git-log-reflog-lines) git-log-reflog-lines-setup)
+  (set (make-local-variable 'git-log-reflog-i) 0)
+  (local-set-key "\M-n" 'git-log-reflog-next)
+  (local-set-key "\M-p" 'git-log-reflog-prev)
+  (font-lock-add-keywords
+   nil '(("^#[^\n]*" . font-lock-doc-face)
+         ("^# Use " "\\[.+?\\]" nil nil (0 font-lock-constant-face t))
+         ("^# (\\([[:digit:]/]+\\)[^\n]+ \\(as\\|of\\|is\\) "
+          (1 font-lock-constant-face t)
+          ("NOT [[:upper:] ]+" nil nil (0 font-lock-warning-face t))
+          ("\\(tag: \\)?\\([^,.]+\\)"
+           nil nil (2 font-lock-function-name-face t)))
+         ("^#   \\([-[:lower:]() ]+\\):" 1 font-lock-variable-name-face t)))
+  ;; Add buffer-local hook to do the actual work.
+  (add-hook 'git-log-view-before-log-hooks 'git--log-reflog-refresh t t))
+
+
+(defun git--log-reflog-refresh ()
+  (let ((buffer-read-only nil))
+    (insert "# In this specialized log view, you can find and recover recent "
+            "git states.\n")
+    (insert (format "# Use [%s] and [%s] to switch trees"
+                    (substitute-command-keys "\\[git-log-reflog-next]")
+                    (substitute-command-keys "\\[git-log-reflog-prev]"))
+            ", then checkout/reset/tag/etc (see menu).\n\n")
+    (let* ((reflog-line (elt git-log-reflog-lines git-log-reflog-i))
+           (split-reflog-line (split-string reflog-line "\t" t))
+           (commit (elt split-reflog-line 0))
+           (reflog-ref (or (elt split-reflog-line 1) ""))
+           (reflog-msg (or (elt split-reflog-line 2) ""))
+              ;; See how easy it is to get to it.
+           (access-doc
+            (or (when (string-match-p "stash@" reflog-ref)
+                  (format "stashed as %s" reflog-ref)) ; stash safe, if seen
+                (let ((desc (git--log "--max-count=1" "--pretty=format:%D"
+                                      commit)))
+                  (when (> (length desc) 0) (format "accessible as %s" desc)))
+                (ignore-errors
+                  (format "an ancestor of %s"
+                          (car (split-string
+                                (git--describe commit "--all" "--contains")
+                                "[\\^~]+" t))))
+                
+                "NOT EASILY ACCESSIBLE"))) ;; Bingo
+      (insert (format "# (%d/%d) This tree is %s.\n"
+                      (+ 1 git-log-reflog-i) (length git-log-reflog-lines)
+                      access-doc))
+      (insert "#   " reflog-msg)
+      (insert "\n\n")
+      (setq git-log-view-start-commit commit)
+      )))
+
+(defun git-log-reflog-next ()
+  (interactive)
+  (setq git-log-reflog-i (mod (+ git-log-reflog-i 1)
+                              (length git-log-reflog-lines)))
+  (git-log-view-refresh))
+           
+(defun git-log-reflog-prev ()
+  (interactive)
+  (setq git-log-reflog-i (mod (- git-log-reflog-i  1)
+                              (length git-log-reflog-lines)))
+  (git-log-view-refresh))
+ 
 
 (provide 'git-log)

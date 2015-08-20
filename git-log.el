@@ -99,7 +99,7 @@
 ;; to the next/prev commit by a different author. But it's harder than a
 ;; simple RE.
 (defvar git-log-view-interesting-commit-re
-  "^Merge[: ]?\\|^ *This reverts commit "
+  "^Merge[: ]?\\|^ *This reverts commit \\|^[Cc]ommit [[:xdigit:]]+ ("
   "Regular expression defining \"interesting commits\" for easy navigation")
 (easy-mmode-define-navigation
  git-log-view-interesting-commit git-log-view-interesting-commit-re
@@ -129,6 +129,17 @@ a full id.")
 actually inserted. May explicitly modify variables like
 `git-log-view-start-commit', `git-log-view-displayed-commit-id',
 set keys, insert text, etc.")
+
+
+(defcustom git-log-view-additional-log-options nil
+  "Additional command-line flags for 'git log' when run `git-log-view-mode'.
+For example, '(\"--decorate\" \"--abbrev-commit\")."
+  :type '(repeat string)
+  :options '("--decorate" "--abbrev-commit") ; only suggestions.
+  :group 'git-emacs
+  :risky t
+  )
+  
 
 
 (defun git--log-view (&optional files start-commit dont-pop-buffer
@@ -201,7 +212,8 @@ IS-EXPLICIT-REFRESH is set, assumes the user requested it directly."
     ;; vc-do-command does almost everything right. Beware, it misbehaves
     ;; if not called with current buffer (undoes our setup)
     (apply #'vc-do-command (current-buffer) 'async "git" nil "log"
-           (append (list new-commit-id) (list "--") git-log-view-filenames))
+           (append git-log-view-additional-log-options
+                   (list new-commit-id) (list "--") git-log-view-filenames))
     )
   
   ;; vc sometimes goes to the end of the buffer, for unknown reasons
@@ -411,7 +423,8 @@ track everything known to reflog (i.e. recent repo changes)."
          (git-log-view-mode-hook git-log-view-mode-hook)       ; save
          (git-log-reflog-lines-setup (vconcat reflog-lines)))
     (unless reflog-lines
-      (error "\"git reflog\" returned nothing. Try command line."))
+      (error "\"git reflog\" returned nothing. Try command line%s."
+             (if (string= "--all" scope) "" " or *all*")))
     (add-hook 'git-log-view-mode-hook 'git--log-reflog-setup)
     (git--log-view nil nil nil buffer-name)))
 

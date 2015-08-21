@@ -747,14 +747,16 @@ arg is not a symbolic ref."
     (when  (> (length commit) 0)
       (car (split-string commit"\n")))))
 
-(defun git--current-branch ()
+(defun git--current-branch (&optional friendly-no-branch)
   "Execute 'git symbolic-ref'HEAD' and return branch name string. Returns
-nil if there is no current branch."
+nil if there is no current branch, but FRIENDLY-NO-BRANCH is set we return
+git's user-friendly name, e.g. (HEAD detached at 234abc)."
   (let ((branch (git-in-lowest-existing-dir nil (git--symbolic-ref "HEAD"))))
-    (when branch
-      (if (string-match "^refs/heads/" branch)
-          (substring branch (match-end 0))
-        branch))))
+    (if branch
+        (if (string-match "^refs/heads/" branch)
+            (substring branch (match-end 0))
+          branch)
+      (when friendly-no-branch (cdr-safe (git--branch-list))))))
 
 (defsubst git--log (&rest args)
   "Execute 'git log ARGS' and return result string"
@@ -1107,17 +1109,62 @@ a commit buffer (and returns). Once the user has committed (or
 immediately, if they chose not to or there are no pending
 changes), AFTER-FUNC is called, which should do the tree
 switching along with any confirmations. The return value is either the
-pending commit buffer or nil if the buffer wasn't needed."
+pending commit buffer, or nil if the buffer wasn't needed. Remember
+to always do subsequent operations in the AFTER-FUNC, with
+lexical or persistent variable bindings (i.e. not let's)"
   ;; git status -a tells us if there's anything to commit
-  (if (and (eq 0 (git--commit-dryrun-compat nil "-a"))
-           (y-or-n-p "Commit your pending changes first? (if not, they will be merged into the new tree) "))
-      (with-current-buffer (git-commit-all)
-        (add-hook 'git--commit-after-hook after-func t t) ; append, local
-        (current-buffer))
-    (funcall after-func)
-    nil))
+  (let ((choice (when (zerop (git--commit-dryrun-compat nil "-a"))
+                  (funcall git--completing-read
+                           "Commit your pending changes first? "
+                           '("commit" "stash" "carry to new tree") nil t))))
+    (if (string= choice "commit")
+        (with-current-buffer (git-commit-all)
+          (add-hook 'git--commit-after-hook after-func t t) ; append, local
+          (current-buffer))             
+      (when (string= choice "stash")
+        (message "%s" (git--trim-string (git--exec-string "stash" "save")))
+        (redisplay t)
+        (sleep-for 1)   ; let the user digest message
+        (git-after-working-dir-change))
+      ;; This fall through (if-commit-else) means we're not waiting for user.
+      (funcall after-func)
+      nil)))
+    
+(defcustom git-fetch-remote-define-old (* 60 24)
+  "Interval of time (minutes) after which certain git-emacs operations on remote
+branches (only) will prompt for a refresh of the remote before proceeding.
+This is measured since the last fetch of *any* remote (the only such
+statistic that git keeps)."
+  :type '(integer)
+  :group 'git-emacs)
 
-
+(defun git--maybe-ask-for-fetch(remote)
+  "Before running certain operations that refer to a remote, it
+might be a good idea to refresh it. By wrapping this function
+around a possibly-remote branch name, e.g. when about to diff, we
+check the last fetch time of git against `git-fetch-remote-define-old'
+and prompt the user for a refresh. The function is really cheap
+for non-remotes. It always returns REMOTE, its input."
+  (when (string-prefix-p
+         "refs/remotes/" (or (ignore-errors
+                               (git--trim-string
+                                (git--rev-parse "--symbolic-full-name" remote)))
+                             ""))
+    (let ((fetch-head (file-attributes (expand-file-name ".git/FETCH_HEAD"
+                                                         (git--get-top-dir)))))
+      (when (and fetch-head
+                 (> (time-to-seconds (time-since (elt fetch-head 5)))
+                    (* 60 git-fetch-remote-define-old))
+                 (y-or-n-p (format "%s looks old, refresh it now? " remote)))
+        ;; Two cases to worry about: origin and origin/master. The refs/ or
+        ;; remotes/ are something fetch doesn't like.
+        (let ((msg (git--trim-string
+                    (apply #'git--exec-string "fetch"
+                           (last (split-string remote "/") 2)))))
+          (message "%s" (if (string= "" msg) "Fetch succeeded." msg)
+                   (sit-for 1))))))   ;; message is important to user.
+  remote)
+  
 ;;-----------------------------------------------------------------------------
 ;; vc-git integration
 ;;-----------------------------------------------------------------------------
@@ -1314,12 +1361,15 @@ buffer. If there is no common base, returns nil."
 (defun git--merge-ask ()
   "Prompts the user for a branch or tag to merge. Returns t if the merge
 succeeded, nil if it had conflicts, raises an error if the merge failed for
-unknown reasons."
+unknown reasons. This function usually needs `git--maybe-ask-save' and
+`git--maybe-ask-and-commit' to run first."
   (let ((branch (git--select-revision "Merge: " nil
                                       (list (git--current-branch))))
         (merge-success t))
     (condition-case err
-        (git--merge branch)
+        (progn
+          (git--maybe-ask-for-fetch branch)
+          (git--merge branch))
       (error
        (setq merge-success nil)
        (let ((err-msg (error-message-string err)))
@@ -1412,6 +1462,16 @@ none ask the user whether to accept the merge results"
       (message "You can hit undo once to restore the buffer")
       )))
 
+(defun git-merge-abort ()
+  "Aborts a merge in progress."
+  (interactive)
+  ;; TODO -- see if there is one for interactive use, before prompting
+  (when (y-or-n-p "Abort and undo this merge? ")
+    (git--merge "--abort")
+    (message "Merge successfully undone")
+    (sit-for 1)
+    (git-after-working-dir-change)))
+
 (defun git-merge-next-action ()
   "Auto-pilot function to guide the user through a git merge. If none in
 progress, prompts for a revision to merge. If there are unresolved conflicts,
@@ -1424,46 +1484,55 @@ the user quits or the merge is successfully committed."
   (let* ((default-directory (git--get-top-dir))
          (unmerged-files (git--ls-unmerged)))
     (if unmerged-files
-        (progn
-          (switch-to-buffer
-           (let ((resolve-next-file
-                  (git--select-from-user
-                   "Resolve next conflict: "
-                   (delq nil (mapcar
+        (condition-case possibly-quit
+            (progn
+              (switch-to-buffer
+               (let ((resolve-next-file
+                      (git--select-from-user
+                       "Resolve next conflict: "
+                       (delq nil
+                             (mapcar
                               #'(lambda (stage-and-fi)
                                   (when (eq 2 (car stage-and-fi))
                                     (file-relative-name (git--fileinfo->name
                                                          (cdr stage-and-fi)))))
-                              unmerged-files)))))
-             ;; find-file-noselect will nicely prompt about refreshing
-             (find-file-noselect resolve-next-file)))
-          (redisplay t)                 ;force refontification, show buffer
-          (if (git--resolve-has-merge-markers)
-              ;; tell resolve-merge to schedule us if the resolution succeeded.
-              ;; Avoid running another ediff from the ediff hook, though
-              (git--resolve-merge-buffer
-               #'(lambda()
-                   (run-at-time "0 sec" nil 'git-merge-next-action)))
-            (if (y-or-n-p "Conflicts seem resolved, save merge result to git? ")
-                (progn
-                  (save-buffer)
-                  (git--add (file-relative-name buffer-file-name))
-                  (git--update-modeline)))
-            (git-merge-next-action)))
-
+                             unmerged-files)))))
+                 ;; find-file-noselect will nicely prompt about refreshing
+                 (find-file-noselect resolve-next-file)))
+              (redisplay t)   ; force refontification, show buffer
+              (if (git--resolve-has-merge-markers)
+                  ;; tell resolve-merge to schedule us if the resolution
+                  ;; succeeded.  Avoid running another ediff from the
+                  ;; ediff hook, though
+                  (git--resolve-merge-buffer
+                   #'(lambda()
+                       (run-at-time "0 sec" nil 'git-merge-next-action)))
+                (if (y-or-n-p "Conflicts seem resolved, commit merge result? ")
+                    (progn
+                      (save-buffer)
+                      (git--add (file-relative-name buffer-file-name))
+                      (git--update-modeline)))
+                (git-merge-next-action)))
+          (quit (git-merge-abort)))
+              
       ;; else branch, no unmerged files remaining
       ;; Perhaps we should commit (staged files only!)
       (if (file-exists-p (expand-file-name ".git/MERGE_HEAD"))
           (git-commit nil nil "Merge finished ")    ; And we're done!
         ;; else branch, no sign of a merge. Ask for another.
-        (if (git--merge-ask)
-            (progn
-              (git-after-working-dir-change)
-              (message "Merge successful"))
-          (sit-for 1.5)            ; for the user to digest message
-          (message "")             ; fixes odd v23 interaction with ediff's msgs
-          (git-merge-next-action)) ; start processing conflicts
-))))
+        (git--maybe-ask-save)
+        ;; A commit might take much user interaction.
+        (git--maybe-ask-and-commit
+         #'(lambda()                    ;; Scheduled after all that
+             (if (git--merge-ask)
+                 (progn
+                   (sit-for 1.5)               ; also to digest message
+                   (git-after-working-dir-change))
+               (sit-for 1.5)  ; for the user to digest message
+               (message "")   ; fixes odd v23 interaction with ediff's msgs
+               (git-merge-next-action)) ; start processing conflicts
+             ))
+        ))))
 
 
 (defun git-resolve-merge ()
@@ -2284,7 +2353,7 @@ behave as if there is no curent branch (error or nil)."
   "Switch to the branch that point is on."
   (interactive)
   (let ((branch (git-branch-mode-selected))
-        (current-branch (git--current-branch)))
+        (current-branch (git--current-branch t)))
     (when (string= branch current-branch)
       (error "Already on branch %s" branch))
     (git-checkout branch
@@ -2356,6 +2425,8 @@ string result will be used as the baseline. Normally, the first string or
 function that matches will be used, but you can select a baseline manually
 by calling `git-baseline' interactively.")
 
+
+;; TODO: ovy: investigate using git's notion of upstream here.
 (defun git-baseline (&optional always-prompt-user)
   "Select the baseline commit used in `git-diff-baseline' and friends, for the
 current repository. Tries to find the repo in `git-baseline-alist'; if not
@@ -2428,7 +2499,7 @@ that variable in .emacs.
   (git--diff (git--if-in-status-mode
               (git--status-view-select-filename)
               buffer-file-name)
-             (concat (git-baseline) ":")))
+             (concat (git--maybe-ask-for-fetch (git-baseline)) ":")))
 
 (defun git-diff-other(commit)
   "Diff current buffer against an arbitrary commit"
@@ -2440,7 +2511,7 @@ that variable in .emacs.
   (git--diff (git--if-in-status-mode
                  (git--status-view-select-filename)
                buffer-file-name)
-             (concat commit ":")))
+             (concat (git--maybe-ask-for-fetch commit) ":")))
 
 ;; git-diff-all variants
 (defun git-diff-all-head (&optional files)
@@ -2456,12 +2527,12 @@ that variable in .emacs.
 (defun git-diff-all-baseline (&optional files)
   "Diff all of the repository, or just FILES, against the \"baseline\" commit."
   (interactive)
-  (git--diff-many files (git-baseline)))
+  (git--diff-many files (git--maybe-ask-for-fetch (git-baseline))))
 
 (defun git-diff-all-other (commit &optional files)
   (interactive
    (list (git--select-revision "Diff against commit: ")))
-  (git--diff-many files commit))
+  (git--diff-many files (git--maybe-ask-for-fetch commit)))
 
 ;;-----------------------------------------------------------------------------
 ;; Add interactively

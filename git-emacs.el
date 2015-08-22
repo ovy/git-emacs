@@ -85,7 +85,7 @@
 ;; DONE : separate branch-mode & status-view-mode to other files
 
 
-(require 'cl)                           ; common lisp
+(eval-when-compile (require 'cl))       ; common lisp
 (require 'ediff)                        ; we use this a lot
 (require 'vc)                           ; vc
 (require 'vc-git)                       ; vc-git advises
@@ -352,7 +352,7 @@ let the user see the invalid directory error."
 grab status-mode filelists without the compiler complaining about the
 autoloading which we know has already happened."
   `(if (eq major-mode 'git-status-mode)
-       (progn (eval-when-compile (require 'git-status)) ,THEN)
+       (with-no-warnings ,THEN)         ; This is me giving up.
      ,@ELSE))
 
 (defun git--get-top-dir (&optional dir)
@@ -975,6 +975,91 @@ except EXCEPTS. Returns the user's selection."
      (delq nil (mapcar (lambda (b) (unless (member b excepts) b))
                        branches)))))
 
+
+(defcustom git-run-command-force-color t
+  "When running asynchronous git commands in separate buffers,
+force color even when comint otherwise wouldn't (e.g because of some
+terminfo thing on Mac). Uses `ansi-color-for-comint-mode'. This works
+well on Mac for all git commands, and the color is useful."
+  :type '(boolean)
+  :group 'git-emacs)
+(defvar-local git--run-command-cmd nil
+  "The command that `git-run-command' ran / is running in this buffer.")
+
+
+(defun git-run-command (cmd &optional wait-and-error)
+  "Runs a git command in a user-visible `comint-mode' buffer,
+compile-style. This is for commands that can take a longer time
+and, in particular, might require typing a password. Commands
+dealing with remotes are perfect candidates. CMD is a string
+command; executed with shell so quote your arguments. Returns the
+buffer in which git is now running, which is displayed but not current.
+
+If WAIT-AND-ERROR is 'wait, sit around waiting for the command to
+succeed (erroring out if it fails), but note that this blocks
+user input other than comint's password handling, so use
+judiciously. In particular, using 'wait for commands that might
+run long compilation hooks is not a good idea. Values other than
+'wait are ignored (reserved).
+
+This function is the programmatic version of `git-cmd', exposed
+to users with stable interface."
+  (let ((buffer (get-buffer-create (format "*git: %s*"
+                                           (abbreviate-file-name
+                                            (git--get-top-dir))))))
+    (with-current-buffer buffer
+      (buffer-disable-undo)
+      (setq buffer-read-only nil)
+      (erase-buffer)
+      (eval-and-compile (require 'comint))
+      (comint-mode)
+      (insert ">> " (propertize (concat "git " cmd)
+                                'face 'comint-highlight-input-face) "\n\n")
+      (local-set-key "q" 'git--quit-buffer)
+      (setq git--run-command-cmd cmd)
+      (local-set-key "g" #'(lambda () (interactive) ; refresh
+                             (git-run-command git--run-command-cmd)))
+      (setq-local scroll-up-aggressively 0.1) ;; output slow(ish) & important
+      (let ((system-uses-terminfo (unless git-run-command-force-color
+                                    system-uses-terminfo))
+            (ansi-color-for-comint-mode (or git-run-command-force-color
+                                            ansi-color-for-comint-mode)))
+        (comint-exec buffer "git" shell-file-name nil
+                     (list "-c" (concat git--executable " " cmd))))
+      (set-process-sentinel (get-buffer-process buffer)
+                            'git--run-command-sentinel))
+    (display-buffer buffer)
+    (when (eq 'wait wait-and-error)
+      (let* ((process (get-buffer-process buffer))
+             (sub-cmd (car (split-string cmd nil t)))
+             (msg (format "Waiting for git %s..." sub-cmd)))
+        ;; This works well most of the time, but it *can* deadlock
+        ;; if git asks for input. Comint handles password prompts, but if
+        ;; the user quits out of the prompt they'll have to quit again
+        ;; to regain control. Hence the warning about wait-and-error and
+        ;; the "waiting" message. Perhaps recursive editing could work,
+        ;; but I don't see a big reason to mess with it now.
+        (while (process-live-p process)
+          (unless (string= (current-message) msg) (message "%s" msg))
+          (sit-for 0.1))
+        (unless (eq 0 (process-exit-status process))
+          (error "Git %s failed" sub-cmd))
+        (message "%sdone" msg)))
+    buffer))
+        
+(defun git--run-command-sentinel (process msg)
+  (let ((buffer (process-buffer process)))
+    (when (and buffer (buffer-live-p buffer))
+      (with-current-buffer buffer
+        (insert "\n" "git " msg)
+        (setq mode-line-process
+              (concat ": git " (if (string-prefix-p "finished" msg)
+                                   "success" "failed")))
+        (setq buffer-read-only t)
+        (set-buffer-modified-p nil)
+        (redisplay t)                   ; mode line etc
+        (with-local-quit (git-after-working-dir-change))))))
+
 ;; ================================================================================
 ;; I will revise this code laster this week
 ;; ================================================================================
@@ -1158,11 +1243,9 @@ for non-remotes. It always returns REMOTE, its input."
                  (y-or-n-p (format "%s looks old, refresh it now? " remote)))
         ;; Two cases to worry about: origin and origin/master. The refs/ or
         ;; remotes/ are something fetch doesn't like.
-        (let ((msg (git--trim-string
-                    (apply #'git--exec-string "fetch"
-                           (last (split-string remote "/") 2)))))
-          (message "%s" (if (string= "" msg) "Fetch succeeded." msg)
-                   (sit-for 1))))))   ;; message is important to user.
+        (git-run-command (git--join (cons "fetch"
+                                          (last (split-string remote "/") 2)))
+                         'wait))))
   remote)
   
 ;;-----------------------------------------------------------------------------
@@ -1922,12 +2005,7 @@ the result as a message."
   ;; The command may or may not affect the working dir or work with files we
   ;; are editing.
   (git--maybe-ask-save)
-  (message "%s" (git--trim-tail
-                 (apply #'git--exec-string (split-string str))))
-  ; let the user digest message, then check for modified files.
-  (sit-for 2)
-  (git-after-working-dir-change))
-
+  (git-run-command str))
 
 
 (defun git-config-init ()

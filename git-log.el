@@ -168,7 +168,6 @@ inside the repo."
          (saved-default-directory default-directory))
    (with-current-buffer buffer
      (when (bufferp use-buffer) (rename-buffer log-buffer-name))
-      (setq prev-commit-id git-log-view-displayed-commit-id)
       ;; Subtle: a previous git process might still be running
       (let ((proc (get-buffer-process (current-buffer))))
         (when proc (delete-process proc)))

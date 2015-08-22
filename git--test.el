@@ -1,5 +1,5 @@
 ;; See git-emacs.el for license and versioning.
-
+(eval-when-compile (require 'cl))
 (require 'git-emacs)
 (require 'git-status)
 (require 'dired)

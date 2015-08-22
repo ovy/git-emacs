@@ -975,6 +975,11 @@ except EXCEPTS. Returns the user's selection."
      (delq nil (mapcar (lambda (b) (unless (member b excepts) b))
                        branches)))))
 
+;; A button that links to a commit, for a log view. Used for recovery links.
+(define-button-type 'git--log-link
+  'help-echo "mouse-2, RET: open a git-log starting here" 'follow-link t
+  'action #'(lambda(button) (git-log-other (button-label button))))
+
 
 (defcustom git-run-command-force-color t
   "When running asynchronous git commands in separate buffers,
@@ -983,11 +988,13 @@ terminfo thing on Mac). Uses `ansi-color-for-comint-mode'. This works
 well on Mac for all git commands, and the color is useful."
   :type '(boolean)
   :group 'git-emacs)
+
 (defvar-local git--run-command-cmd nil
   "The command that `git-run-command' ran / is running in this buffer.")
+(defvar-local git--run-command-when-done nil
+  "A function to when `git-run-command' finishes.")
 
-
-(defun git-run-command (cmd &optional wait-and-error)
+(defun git-run-command (cmd &optional wait-and-error when-done recovery-link)
   "Runs a git command in a user-visible `comint-mode' buffer,
 compile-style. This is for commands that can take a longer time
 and, in particular, might require typing a password. Commands
@@ -1002,6 +1009,16 @@ judiciously. In particular, using 'wait for commands that might
 run long compilation hooks is not a good idea. Values other than
 'wait are ignored (reserved).
 
+WHEN-DONE is a callback to run when the command finishes, *whether
+success or failure*, with the buffer current. It can distinguish
+using (process-exit-status (buffer-process)). For completeness,
+it's also called when WAITing although it's not the main use
+case. `git-after-working-dir-change' is an obvious candidate. 
+
+If RECOVERY-LINK is set (usually to \"HEAD\") inserts a link for
+quick recovery of the present state of that ref. This is done
+before potentially messy commands like pull and merge.
+
 This function is the programmatic version of `git-cmd', exposed
 to users with stable interface."
   (let ((buffer (get-buffer-create (format "*git: %s*"
@@ -1010,15 +1027,28 @@ to users with stable interface."
     (with-current-buffer buffer
       (buffer-disable-undo)
       (setq buffer-read-only nil)
+      ;; Kill existing git (e.g. waiting after password C-g). Although we
+      ;; could allocate another buffer, it's best that only one git runs.
+      (when (process-live-p (get-buffer-process buffer))
+        (set-process-sentinel (get-buffer-process buffer) nil)
+        (delete-process (get-buffer-process buffer)) ;; no sentinel, like a quit
+        (sit-for 1))                   ;; let user see this
       (erase-buffer)
+      
       (eval-and-compile (require 'comint))
       (comint-mode)
       (insert ">> " (propertize (concat "git " cmd)
-                                'face 'comint-highlight-input-face) "\n\n")
+                                'face 'comint-highlight-input-face) "\n")
+      (when recovery-link
+        (insert "(You can recover " recovery-link " as ")
+        (insert-text-button (git--abbrev-commit recovery-link)
+                            'type 'git--log-link)
+        (insert ")\n\n"))
       (local-set-key "q" 'git--quit-buffer)
-      (setq git--run-command-cmd cmd)
+      (setq-local git--run-command-cmd cmd)
+      (setq-local git--run-command-when-done when-done)
       (local-set-key "g" #'(lambda () (interactive) ; refresh
-                             (git-run-command git--run-command-cmd)))
+                             (git-run-pcommand git--run-command-cmd)))
       (setq-local scroll-up-aggressively 0.1) ;; output slow(ish) & important
       (let ((system-uses-terminfo (unless git-run-command-force-color
                                     system-uses-terminfo))
@@ -1042,6 +1072,7 @@ to users with stable interface."
         (while (process-live-p process)
           (unless (string= (current-message) msg) (message "%s" msg))
           (sit-for 0.1))
+        (delete-process process)        ;make sure sentinel ran
         (unless (eq 0 (process-exit-status process))
           (error "Git %s failed" sub-cmd))
         (message "%sdone" msg)))
@@ -1058,91 +1089,9 @@ to users with stable interface."
         (setq buffer-read-only t)
         (set-buffer-modified-p nil)
         (redisplay t)                   ; mode line etc
-        (with-local-quit (git-after-working-dir-change))))))
+        (when git--run-command-when-done
+          (funcall git--run-command-when-done))))))
 
-;; ================================================================================
-;; I will revise this code laster this week
-;; ================================================================================
-(defun git-pull-ff-only ()
-  "Interactive git pull. Prompts user for a remote branch, and pulls from it.
-  This command will fail if we can not do a ff-only pull from the remote branch."
-  (interactive)
-  (let ((remote (git--select-remote 
-                 (concat "Select remote for pull (local branch:" 
-                         (git--current-branch) 
-                         "): "))))
-    (message (git--pull-ff-only remote))))
-
-;; XXX. should this be implemented list this way? umm..
-(defsubst git--select-remote (prompt &rest excepts)
-  "Select remote branch interactively."
-  (let ((remotes (git--symbolic-commits '("remotes"))))
-    (git--select-from-user prompt
-                           (delq nil (mapcar (lambda (b) (unless (member b excepts) b))
-                                             remotes)))))
-
-(defun git--pull-ff-only (remote)
-  "Pull from remote into current branch, but only on a fast-forward pull."
-  (let ((split-remote (split-string remote "/"))
-        (parse-success-string (lambda (resultstring) ;; Parses success string
-                                (let ((lines (split-string resultstring "\n")))
-                                  (if (string-equal (nth 2 lines) "Already up-to-date.")
-                                      "Already up-to-date."
-                                    (let ((revision-change 
-                                           (split-string (cadr (split-string (nth 2 lines) )) 
-                                                         "\\.\\.")))
-                                      (concat "Pulled revisions from " 
-                                              (car revision-change) 
-                                              " to " 
-                                              (cadr revision-change) 
-                                              "." (nth (- (length lines) 2) lines))))))))
-    (let ((remote-name (car split-remote))
-          (remote-branch (car (cdr split-remote))))
-      (condition-case err
-          (progn
-            (funcall parse-success-string 
-                     (git--exec-string "pull" "--ff-only" remote-name (concat remote-branch))))
-        (error (error-message-string err))))))
-
-(defun git--split-porcelain (resultstring)
-  (mapcar (lambda (s) (split-string s "\t")) (split-string resultstring "\n")))
-
-(defun git--n-n-th (i j arr)
-  "Given a 2-d list, access the i,j 'th element"
-  (nth j (nth i arr)))
-
-(defun git--actual-push (remote-name remote-branch)
-  (let ((actual-run-output 
-         (git--split-porcelain 
-          (git--exec-string "push" "--porcelain" 
-                            remote-name 
-                            (concat (git--current-branch) ":" remote-branch)))))
-    (message (concat "Pushed changes " 
-                     (git--n-n-th 1 2 dry-run-output) 
-                     " to remote " 
-                     remote-name 
-                     "/" 
-                     remote-branch))))
-
-(defun git--push-ff-only (remote)
-  "Pushes from current branch into remote, fast-forward only."
-  (let ((split-remote (split-string remote "/")))
-    (let ((dry-run-output (git--split-porcelain 
-                           (git--exec-string "push" "--dry-run" "--porcelain" 
-                                             (car split-remote) 
-                                             (concat (git--current-branch) ":" (cadr split-remote))))))
-      (let ((newbranch (string-equal (git--n-n-th 1 2 dry-run-output) "[new branch]"))
-            (change-diff (git--n-n-th 1 2 dry-run-output))
-            (up-to-date (string-equal (git--n-n-th 1 0 dry-run-output) "Everything up-to-date")))
-        (cond (newbranch (if (y-or-n-p (concat "Pushing will create branch " 
-                                               (cadr split-remote) 
-                                               " in remote. Continue? "))
-                             (git--actual-push (car split-remote) (cadr split-remote))
-                           (message "Did not push.")))
-              (up-to-date (message "Remote branch is up to date."))
-              ((not newbranch) (git--actual-push (car split-remote) (cadr split-remote)))
-              (t (message "Did not push.")))))))
-;; --------------------------------------------------------------------------------
 
 (defun git--symbolic-commits (&optional reftypes)
   "Find symbolic names referring to commits, using 'git for-each-ref'.
@@ -1201,7 +1150,7 @@ lexical or persistent variable bindings (i.e. not let's)"
   (let ((choice (when (zerop (git--commit-dryrun-compat nil "-a"))
                   (funcall git--completing-read
                            "Commit your pending changes first? "
-                           '("commit" "stash" "carry to new tree") nil t))))
+                           '("commit" "stash" "no (merge in)") nil t))))
     (if (string= choice "commit")
         (with-current-buffer (git-commit-all)
           (add-hook 'git--commit-after-hook after-func t t) ; append, local
@@ -2005,7 +1954,7 @@ the result as a message."
   ;; The command may or may not affect the working dir or work with files we
   ;; are editing.
   (git--maybe-ask-save)
-  (git-run-command str))
+  (git-run-command str 'git-after-working-dir-change))
 
 
 (defun git-config-init ()
@@ -2758,4 +2707,41 @@ usual pre / post work: ask for save, ask for refresh."
   (git-after-working-dir-change))
 
 
+(defvar git-push-history nil
+  "History variable for `git-push'. Okay to customize with your favorites.")
+
+(defun git-push (&optional command)
+  "Prompt for push arguments, using COMMAND or history as
+default, then run \"git push args\" in a `git-run-command'
+buffer. Since this command can be impactful, always prompts."
+  (interactive)
+  (setq command
+        (read-string (format "[on %s] git push >> " (git--current-branch t))
+                     (or command (car-safe git-push-history))
+                     (if command 'git-push-history '(git-push-history . 1))))
+  ;; Don't ask for save/commit here, we're not switching trees. It's quite
+  ;; legitimate and harmless to push with pending changes.
+  (git-run-command (concat "push " command)))  ;; no wait, no refresh dirs
+
+
+(defvar git-pull-history '("--ff-only")
+  "History variable for `git-push'. Okay to customize with your favorites.")
+
+(defun git-pull (&optional command)
+  "Prompt for pull arguments, using COMMAND or history as
+default, then run \"git pull args\" in a `git-run-command' buffer.
+Since this command can be impactful, always prompts."
+  (interactive)
+  (setq command
+        (read-string "git pull >> " (or command (car-safe git-pull-history))
+                     (if command 'git-pull-history '(git-pull-history . 1))))
+  ;; Here we do need to ask for save & commit/stash. Git itself recommends
+  ;; against pulling with a dirty tree.
+  (git--maybe-ask-save)
+  (git--maybe-ask-and-commit
+   (lexical-let ((run-command (concat "pull " command)))
+     #'(lambda() (git-run-command run-command nil ;; don't wait
+                                  'git-after-working-dir-change "HEAD")))))
+                     
+  
 (provide 'git-emacs)

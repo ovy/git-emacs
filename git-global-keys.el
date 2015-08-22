@@ -49,6 +49,9 @@
 
 (define-key git-global-map "m" 'git-merge-next-action)
 
+(define-key git-global-map "p" 'git-pull)
+(define-key git-global-map "P" 'git-push)
+
 (define-key git-global-map "R" 'git-reset)
 
 (define-key git-global-map "s" 'git-status)
@@ -82,8 +85,11 @@
     ["Find Lost Commits with Reflog..." git-log-dontpanic-reflog t]
     "---"
     ["Merge (start or continue)..." git-merge-next-action t]
-    ["Reset..." git-reset t]
+    ["Reset to..." git-reset t]
     ["Stash..." git-stash t]
+    "---"
+    ["Pull from Remote..." git-pull t]
+    ["Push to Remote..." git-push t]
     "---"
     ["Branch View" git-branch t]
     ["Status" git-status t]

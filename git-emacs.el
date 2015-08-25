@@ -1043,12 +1043,13 @@ to users with stable interface."
         (insert "(You can recover " recovery-link " as ")
         (insert-text-button (git--abbrev-commit recovery-link)
                             'type 'git--log-link)
-        (insert ")\n\n"))
+        (insert ")\n"))
+      (insert "\n")
       (local-set-key "q" 'git--quit-buffer)
       (setq-local git--run-command-cmd cmd)
       (setq-local git--run-command-when-done when-done)
       (local-set-key "g" #'(lambda () (interactive) ; refresh
-                             (git-run-pcommand git--run-command-cmd)))
+                             (git-run-command git--run-command-cmd)))
       (setq-local scroll-up-aggressively 0.1) ;; output slow(ish) & important
       (let ((system-uses-terminfo (unless git-run-command-force-color
                                     system-uses-terminfo))
@@ -1498,7 +1499,7 @@ none ask the user whether to accept the merge results"
   "Aborts a merge in progress."
   (interactive)
   ;; TODO -- see if there is one for interactive use, before prompting
-  (when (y-or-n-p "Abort and undo this merge? ")
+  (when (y-or-n-p "Undo this merge? ")
     (git--merge "--abort")
     (message "Merge successfully undone")
     (sit-for 1)
@@ -2707,7 +2708,7 @@ usual pre / post work: ask for save, ask for refresh."
   (git-after-working-dir-change))
 
 
-(defvar git-push-history nil
+(defvar git-push-history '("--dry-run")
   "History variable for `git-push'. Okay to customize with your favorites.")
 
 (defun git-push (&optional command)
@@ -2719,6 +2720,7 @@ buffer. Since this command can be impactful, always prompts."
         (read-string (format "[on %s] git push >> " (git--current-branch t))
                      (or command (car-safe git-push-history))
                      (if command 'git-push-history '(git-push-history . 1))))
+  (when (string= command "") (push "" git-push-history)) ;; !done by default
   ;; Don't ask for save/commit here, we're not switching trees. It's quite
   ;; legitimate and harmless to push with pending changes.
   (git-run-command (concat "push " command)))  ;; no wait, no refresh dirs
@@ -2735,6 +2737,7 @@ Since this command can be impactful, always prompts."
   (setq command
         (read-string "git pull >> " (or command (car-safe git-pull-history))
                      (if command 'git-pull-history '(git-pull-history . 1))))
+  (when (string= command "") (push "" git-pull-history)) ;; !done by default
   ;; Here we do need to ask for save & commit/stash. Git itself recommends
   ;; against pulling with a dirty tree.
   (git--maybe-ask-save)

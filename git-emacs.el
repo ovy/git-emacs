@@ -266,26 +266,22 @@ if it fails. If the command succeeds, returns the git output."
         (error "%s" (git--trim-string (buffer-string)))))))
 
 
-;; This is nasty: the git devs changed the meaning of "git status" in git
-;; 1.7, but commit --dry-run is not available in older git. Thanks much
-;; guys -- I get to learn to learn how to do horrible hacks like this.
-;; Hopefully the messages aren't translated or something.
+;; Originally this addressed another issue but a lot has changed since 1.7.
+;; Now we have another corner case to worry about :)
 (defun git--commit-dryrun-compat(outbuf &rest args)
-  "Executes commit --dry-run with the specified args, falls back to the
-older git status if that command is not present. If OUTBUF is not nil, puts
-the standard output there. Returns the git return code."
-  ;; Going forward, this will simply succeed.
+  "Executes commit --dry-run with the specified args; upon error code
+checks to see if a MERGE_HEAD exists, thereby returning 0. This fixes
+a git commit --dry-run corner case reported to the git devs.
+
+If OUTBUF is not nil, puts the standard output there. Returns the
+git return code."
   (let ((rc (apply #'git--exec "commit" (list outbuf nil) nil
                    "--dry-run" args)))
-    (when (eq rc 129)
-      ;; gotta distinguish between bad args or no --dry-run.
-      (let ((has-dry-run
-             (string-match
-              "--dry-run"
-              (git--exec-string-no-error "commit" "--no-such-arg-show-help"))))
-        (unless has-dry-run
-          (setq rc (apply #'git--exec "status" outbuf nil args)))))
-    rc))
+    (if (and (eq rc 1)
+             (file-exists-p (expand-file-name ".git/MERGE_HEAD"
+                                              (git--get-top-dir))))
+        0             ; There ARE changes to commit.
+      rc)))
 
 
 ;;-----------------------------------------------------------------------------
@@ -1398,20 +1394,22 @@ unknown reasons. This function usually needs `git--maybe-ask-save' and
 `git--maybe-ask-and-commit' to run first."
   (let ((branch (git--select-revision "Merge: " nil
                                       (list (git--current-branch))))
-        (merge-success t))
+        (has-conflicts nil))
     (condition-case err
         (progn
           (git--maybe-ask-for-fetch branch)
-          (git--merge branch))
-      (error
-       (setq merge-success nil)
-       (let ((err-msg (error-message-string err)))
-         ;; Often because of conflicts
-         (if (string-match "^CONFLICT" err-msg)
-               (message "%s" err-msg)
-           ;; otherwise, reraise
-           (signal (car err) (cdr err))))))
-    merge-success))
+          ;; Merges are quick so we can do synch, but we do want to see
+          ;; the message in a nicer way. Hence, run-command.
+          (git-run-command
+           (concat "merge --no-commit " branch) 'wait
+           #'(lambda()
+               (setq has-conflicts (save-excursion
+                                     (re-search-backward "^CONFLICT" nil t))))
+           "HEAD")
+          t)                            ; success
+      (error  ;; reraise if unrelated to conflicts
+         (unless has-conflicts (signal (car err) (cdr err)))))
+    (not has-conflicts)))
 
 (defun git-merge ()
   "Prompts the user for a branch or tag to merge. On success, asks for
@@ -1498,74 +1496,93 @@ none ask the user whether to accept the merge results"
 (defun git-merge-abort ()
   "Aborts a merge in progress."
   (interactive)
-  ;; TODO -- see if there is one for interactive use, before prompting
-  (when (y-or-n-p "Undo this merge? ")
-    (git--merge "--abort")
-    (message "Merge successfully undone")
-    (sit-for 1)
-    (git-after-working-dir-change)))
+  (let ((merging-with (ignore-errors    ; which it throws
+                        (git--describe "MERGE_HEAD" "--always" "--abbrev"
+                                       "--tags" "--exact-match"))))
+    (unless merging-with (user-error "No merge appears to be in progress"))
+    (when (y-or-n-p (format "Undo current merge with %s? " merging-with))
+      (git--merge "--abort")
+      (message "Merge successfully undone")
+      (sit-for 1)
+      (git-after-working-dir-change))))
 
-(defun git-merge-next-action ()
-  "Auto-pilot function to guide the user through a git merge. If none in
-progress, prompts for a revision to merge. If there are unresolved conflicts,
-prompts for resolving the next one. If all conflicts have been resolved, pulls
-up a commit buffer. The function continues with the above logic until either
-the user quits or the merge is successfully committed."
-  (interactive)
+(defun git-merge-next-action (&optional initiate-or-undo)
+  "Auto-pilot function to guide the user through a git merge. If
+none in progress, prompts for a revision to merge. If there are
+unresolved conflicts, prompts for resolving the next one. If all
+conflicts have been resolved, pulls up a commit buffer. The
+function continues with the above logic until either the user
+quits or the merge is successfully committed. INITIATE-OR-UNDO
+is an interactive argument that provides finer grainer control:
+normally true ('initiate') in interactive, except universal arg
+causes us to try to undo (with prompt) a merge in progress.
+Returns nil if there is (no more) merge in the current tree,
+not nil in other cases (reserved)."
+  (interactive "p")
   ;; First, check for any unmerged files. We must go to the top every time,
   ;; because the default-dir might change on us.
   (let* ((default-directory (git--get-top-dir))
          (unmerged-files (git--ls-unmerged)))
-    (if unmerged-files
-        (condition-case possibly-quit
-            (progn
-              (switch-to-buffer
-               (let ((resolve-next-file
-                      (git--select-from-user
-                       "Resolve next conflict: "
-                       (delq nil
-                             (mapcar
-                              #'(lambda (stage-and-fi)
-                                  (when (eq 2 (car stage-and-fi))
-                                    (file-relative-name (git--fileinfo->name
-                                                         (cdr stage-and-fi)))))
-                             unmerged-files)))))
-                 ;; find-file-noselect will nicely prompt about refreshing
-                 (find-file-noselect resolve-next-file)))
-              (redisplay t)   ; force refontification, show buffer
-              (if (git--resolve-has-merge-markers)
-                  ;; tell resolve-merge to schedule us if the resolution
-                  ;; succeeded.  Avoid running another ediff from the
-                  ;; ediff hook, though
-                  (git--resolve-merge-buffer
-                   #'(lambda()
-                       (run-at-time "0 sec" nil 'git-merge-next-action)))
-                (if (y-or-n-p "Conflicts seem resolved, commit merge result? ")
-                    (progn
-                      (save-buffer)
-                      (git--add (file-relative-name buffer-file-name))
-                      (git--update-modeline)))
-                (git-merge-next-action)))
-          (quit (git-merge-abort)))
-              
+    (cond
+     ((eq 4 initiate-or-undo)
+      (if merging (if (git-merge-abort) nil t)
+        (user-error "No merge appears to be in progress")))
+     (unmerged-files
+      (condition-case possibly-quit
+          (progn
+            (switch-to-buffer
+             (let ((resolve-next-file
+                    (git--select-from-user
+                     "Resolve next conflict: "
+                     (delq nil
+                           (mapcar
+                            #'(lambda (stage-and-fi)
+                                (when (eq 2 (car stage-and-fi))
+                                  (file-relative-name (git--fileinfo->name
+                                                       (cdr stage-and-fi)))))
+                            unmerged-files)))))
+               ;; find-file-noselect will nicely prompt about refreshing
+               (find-file-noselect resolve-next-file)))
+            (redisplay t)   ; force refontification, show buffer
+            (if (git--resolve-has-merge-markers)
+                ;; tell resolve-merge to schedule us if the resolution
+                ;; succeeded.  Avoid running another ediff from the
+                ;; ediff hook, though.
+                (git--resolve-merge-buffer
+                 #'(lambda()
+                     (run-at-time "0 sec" nil 'git-merge-next-action)))
+              (if (y-or-n-p
+                   "Conflicts seem resolved, save this file to index? ")
+                  (progn
+                    (save-buffer)
+                    (git--add (file-relative-name buffer-file-name))
+                    (git--update-modeline)
+                    (git-merge-next-action))
+                ;; If user said no, let them sit on this file & call us back.
+                t) ;; merge resolved
+              )
+            )  ;; there were conflicts, quitable
+        (quit (if (git-merge-abort) nil t))))
       ;; else branch, no unmerged files remaining
       ;; Perhaps we should commit (staged files only!)
-      (if (file-exists-p (expand-file-name ".git/MERGE_HEAD"))
-          (git-commit nil nil "Merge finished ")    ; And we're done!
-        ;; else branch, no sign of a merge. Ask for another.
-        (git--maybe-ask-save)
-        ;; A commit might take much user interaction.
-        (git--maybe-ask-and-commit
-         #'(lambda()                    ;; Scheduled after all that
-             (if (git--merge-ask)
-                 (progn
-                   (sit-for 1.5)               ; also to digest message
-                   (git-after-working-dir-change))
-               (sit-for 1.5)  ; for the user to digest message
-               (message "")   ; fixes odd v23 interaction with ediff's msgs
-               (git-merge-next-action)) ; start processing conflicts
-             ))
-        ))))
+     ((file-exists-p ".git/MERGE_HEAD")
+      (git-commit nil nil "Merge finished. "))    ; And we're done!
+      ;; No sign of a merge. Ask for another?
+      ((not initiate-or-undo) nil)
+      ;; Yes, initiate
+      (t
+       (git--maybe-ask-save)
+       ;; A commit might take much user interaction.
+       (git--maybe-ask-and-commit
+        #'(lambda()                    ;; Scheduled after all that
+            (if (git--merge-ask)
+                (progn
+                  (git-after-working-dir-change)
+                  (sit-for 1)
+                  (git-merge-next-action)) ; might need a commit
+              (git-merge-next-action)) ; start processing conflicts
+            ))
+       ))))
 
 
 (defun git-resolve-merge ()

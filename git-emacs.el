@@ -1494,7 +1494,7 @@ none ask the user whether to accept the merge results"
       )))
 
 (defun git-merge-abort ()
-  "Aborts a merge in progress."
+  "Aborts a merge in progress. Returns t if merge aborted."
   (interactive)
   (let ((merging-with (ignore-errors    ; which it throws
                         (git--describe "MERGE_HEAD" "--always" "--abbrev"
@@ -1504,7 +1504,8 @@ none ask the user whether to accept the merge results"
       (git--merge "--abort")
       (message "Merge successfully undone")
       (sit-for 1)
-      (git-after-working-dir-change))))
+      (git-after-working-dir-change)
+      t)))
 
 (defun git-merge-next-action (&optional initiate-or-undo)
   "Auto-pilot function to guide the user through a git merge. If
@@ -1524,9 +1525,8 @@ not nil in other cases (reserved)."
   (let* ((default-directory (git--get-top-dir))
          (unmerged-files (git--ls-unmerged)))
     (cond
-     ((eq 4 initiate-or-undo)
-      (if merging (if (git-merge-abort) nil t)
-        (user-error "No merge appears to be in progress")))
+     ((eq 4 initiate-or-undo) (if (git-merge-abort) nil t))
+
      (unmerged-files
       (condition-case possibly-quit
           (progn
@@ -2654,12 +2654,8 @@ that variable in .emacs.
   '(("^\\(stash@{\\([^}]*\\)}\\):"
      (1 font-lock-function-name-face prepend)
      (2 font-lock-variable-name-face prepend))
-    ("^\\(Branch\\): \\([^(\n]+\\)\\( (\\(changes pending\\))\\| ([^\n]*\\)?\n"
-     ;; Actually, too much decoration looks ugly.
-     ;;(1 'git--bold-face prepend)
-     ;;(2 font-lock-variable-name-face prepend)
-     (4 'git--bold-face prepend)
-     )))
+    ("^Branch: " "changes pending" nil nil (0 'git--bold-face prepend))
+    ))
 ;; (makunbound 'git--stash-list-font-lock-keywords)
 
 (defun git--prepare-stash-list-buffer (buffer)
@@ -2701,6 +2697,7 @@ usual pre / post work: ask for save, ask for refresh."
                (set (make-local-variable 'overlay-arrow-position)
                     (point-marker))
                (insert stash-list-str)))
+           (goto-char (point-min))
            (fit-window-to-buffer)
            (message "Checking tree status...")
            (redisplay t)                ; this might take a little bit
@@ -2715,6 +2712,8 @@ usual pre / post work: ask for save, ask for refresh."
                     ;; are no pending changes and stashes present, else nothing
                     (cond
                      (changes-pending "save") (stashes-exist "pop") (t ""))))
+               ;; This is what the user sees.
+               (ignore-errors (scroll-down 1000))
                (setq cmd (read-string "git stash >> "
                                       suggested-cmd 'git--stash-history)))))
          (delete-windows-on buffer)

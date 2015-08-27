@@ -2400,7 +2400,6 @@ position."
   (interactive)
 
   (let ((buffer (get-buffer-create "*git-branch*"))
-        (windows (current-window-configuration))
         ;; Subtle: a pre-existing *git-branch* buffer might have the wrong dir
         (directory default-directory))
     (with-current-buffer buffer

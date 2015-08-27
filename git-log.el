@@ -66,6 +66,7 @@
   (define-key map "f" 'git-log-view-visit-file)
 
   (define-key map "l" 'git-log-other)
+  (define-key map "L" 'git-log-view-apply-custom)
   (define-key map "S" 'git-log-dontpanic-reflog)
   (define-key map "g" 'git-log-view-refresh)
   (define-key map "q" 'git--quit-buffer)
@@ -153,7 +154,12 @@ For example, '(\"--decorate\" \"--abbrev-commit\")."
   :group 'git-emacs
   :risky t
   )
-  
+
+
+(defvar git-log-view-custom-options nil
+  "Arguments (git log switches) to set programmatically in a
+`git-log-view-mode' buffer. Becomes buffer-local after buffer
+creation. It's a good idea to set a custom buffer name as well")
 
 
 (defun git--log-view (&optional files start-commit dont-pop-buffer
@@ -193,6 +199,7 @@ inside the repo."
       (set (make-local-variable 'git-log-view-start-commit) start-commit)
       (set (make-local-variable 'git-log-view-displayed-commit-id) nil)
       (set (make-local-variable 'git-log-view-filenames) rel-filenames)
+      (make-local-variable 'git-log-view-custom-options)
       ;; Let base log-view mode know if we're taking about different files
       (set (make-local-variable 'log-view-per-file-logs) nil)
       (set (make-local-variable 'log-view-vc-fileset)
@@ -226,6 +233,7 @@ IS-EXPLICIT-REFRESH is set, assumes the user requested it directly."
     ;; if not called with current buffer (undoes our setup)
     (apply #'vc-do-command (current-buffer) 'async "git" nil "log"
            (append git-log-view-additional-log-options
+                   git-log-view-custom-options
                    (list new-commit-id) (list "--") git-log-view-filenames))
     )
   
@@ -518,6 +526,36 @@ track everything known to reflog (i.e. recent repo changes)."
   (setq git-log-reflog-i (mod (- git-log-reflog-i  1)
                               (length git-log-reflog-lines)))
   (git-log-view-refresh))
+
+
+;; A way to refresh log view with custom options. Most useful for finding stuff.
+(defvar git-log-view-custom-history '("-G^int main\(") ; as example, with space
+  "History variable for `git-log-view-apply-custom'")
+
+(defun git-log-view-apply-custom ()
+  "Prompt and apply a custom set of 'git log' options to this log view.
+This is most useful to use git's search options, like -G<regexp>. Some
+formatting options will probably cause log view navigation to stop working.
+Arguments are requested one by one and should not be shell-quoted.
+The custom options are \"sticky\" in this buffer (w.r.t. refresh), so
+this function adds \"<custom>\" to the buffer name to avoid confusion."
+  (interactive)
+  (unless (eq major-mode 'git-log-view-mode) (error "Not in git log view"))
+  (setq-local
+   git-log-view-custom-options
+   (loop for i from 1 to 1000
+         with one-arg = nil
+         do (setq one-arg
+                  (read-string (format "git log --arg%d (empty if done): " i)
+                               (elt git-log-view-custom-options (- i 1))
+                               'git-log-view-custom-history))
+         until (string= one-arg "")
+         collect one-arg))
+  (unless (string-match-p "<custom>" (buffer-name))
+    (rename-buffer (concat (buffer-name) " <custom>") t))
+  (git--please-wait (format "Refreshing with git log %s"
+                            (git--join git-log-view-custom-options))
+    (git-log-view-refresh)))
  
 
 (provide 'git-log)

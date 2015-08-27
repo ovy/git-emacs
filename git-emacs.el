@@ -314,8 +314,12 @@ git return code."
   "Delete the current window, kill the current buffer."
   (interactive)
   (let ((buffer (current-buffer)))
-    ;; Emacs refuses to delete a "maximized" window (i.e. just 1 in frame)
-    (unless (one-window-p t) (delete-window))
+    ;; Special case 1: a branch or stash buffer should not be maximized (they
+    ;; look nasty).
+    (let ((next-buf (window-buffer (next-window))))
+      (unless (member (buffer-name next-buf) '("*git-branch*" "*git-stash*"))
+        ;; Special case 2: Emacs refuses to delete a "maximized" window
+        (unless (one-window-p t) (delete-window))))
     (kill-buffer buffer)))
 
 (defun git--rev-parse (&rest args)
@@ -381,6 +385,7 @@ autoloading which we know has already happened."
   "Macro to give feedback around actions that may take a long
 time. Prints MSG..., executes BODY, then prints MSG...done (as per the elisp
 style guidelines)."
+  (declare (indent defun))
   `(let ((git--please-wait-msg (concat ,msg "...")))
      (message git--please-wait-msg)
      ,@body
@@ -878,16 +883,18 @@ only checks the specified files. The list is sorted by filename."
   "Run 'git merge ARGS', output the return message to the user."
   (message "%s" (git--trim-string (apply #'git--exec-string "merge" args))))
 
-(defsubst git--branch (&rest args)
+(defun git--branch (&rest args)
   (apply #'git--exec-string "branch" args))
 
 (defun git--abbrev-commit(&optional commit size)
-  "Returns a short yet unambiguous SHA1 checksum for a COMMIT. The default
-SIZE is 5, but it will be longer if needed (due to conflicts). The default
-COMMIT is HEAD."
+  "Returns a short yet unambiguous SHA1 checksum for a
+COMMIT. The default SIZE is the git default; it will be longer if
+needed. The default COMMIT is HEAD."
   (git--trim-string
-   (git--exec-string "rev-list" "--abbrev-commit"  "--max-count=1"
-                     (format "--abbrev=%d" (or size 5)) (or commit "HEAD"))))
+   (apply #'git--exec-string
+          (append '( "rev-list" "--abbrev-commit"  "--max-count=1")
+                  (when size (list (format "--abbrev=%d" size)))
+                  (list (or commit "HEAD"))))))
 
 (defun git--describe(commit &rest flags)
   "Returns the result of 'git describe FLAGS... COMMIT', which you can use to
@@ -932,7 +939,8 @@ find alternate names or search for the location of a commit."
 
       (while (re-search-forward regexp nil t)
         (let ((branch (match-string 2)))
-          (unless (string= branch "(no branch)")
+          (unless (or (string= branch "(no branch)")
+                      (string-match-p "HEAD detached" branch))
             (push branch branches))
           (when (and (not current-branch) (string= "*" (match-string 1)))
             (setq current-branch branch)))))
@@ -1908,6 +1916,35 @@ once the checkout is complete."
          (git-after-working-dir-change repo-dir))))))
 
 
+(defun git--prompt-new-branch-and-start (&optional branch suggested-start)
+  "Prompt for a branch and a start point, see `git-checkout-to-new-branch'.
+If branch already exists, make it clear to the user during the prompting.
+Returns a list (BRANCH START-POINT EXISTING-TIP), where the third element,
+if not nil, indicates that the branch already existed but the user okayed
+ moving it to START-POINT."
+  (let* ((branch-list (git--branch-list)) ; NB: altered below
+         (branch
+          (or branch
+              ;; Similarly to new tag, don't use ido.
+              (completing-read "New branch: "
+                               (delete (cdr branch-list) (car branch-list))))))
+    (when (string= branch "") (error "No branch specified"))
+    (when (string= branch (cdr branch-list))
+      (error "Branch %s is already current" branch))
+    (let* ((suggested-start (or suggested-start (cdr branch-list)))
+           (existing-commit (ignore-errors (git--abbrev-commit branch)))
+           (question-fmt (if (not existing-commit)
+                             "Create %s based on: "
+                           (format "Move %%s from %s to: " existing-commit)))
+           ;; put current branch as the first option to be based on.
+           (commit (git--select-revision
+                    (format question-fmt (git--bold-face branch))
+                    ;; Move the suggestion from the end to the beginning.
+                    (when suggested-start (list suggested-start))
+                    (when suggested-start (list suggested-start)))))
+      (list branch commit existing-commit))))
+    
+
 (defalias 'git-create-branch 'git-checkout-to-new-branch)
 
 (defun git-checkout-to-new-branch (&optional branch suggested-start
@@ -1922,24 +1959,52 @@ once the checkout is complete."
   (git--maybe-ask-save)
   (git--maybe-ask-and-commit
    (lexical-let ((branch branch)
+                 (suggested-start suggested-start)
                  (repo-dir default-directory)
                  (after-checkout-func after-checkout-func)
                  (after-checkout-func-args after-checkout-func-args))
      (lambda()
-       (let* ((branch (or branch (read-from-minibuffer "Create new branch: ")))
-              (suggested-start (or suggested-start
-                                   (git--current-branch)))
-              ;; put current branch as the first option to be based on.
-              (commit (git--select-revision
-                       (format "Create %s based on: "
-                               (git--bold-face branch))
-                       ;; Move the suggestion from the end to the beginning.
-                       (when suggested-start (list suggested-start))
-                       (when suggested-start (list suggested-start)))))
-         (git--checkout "-b" branch commit)
+       (let* ((branch-prompt (git--prompt-new-branch-and-start
+                              branch suggested-start))
+              (branch (nth 0 branch-prompt))
+              (old-tip (nth 2 branch-prompt)))
+         (git--checkout (if old-tip "-B" "-b") branch (nth 1 branch-prompt))
          (when after-checkout-func
            (apply after-checkout-func after-checkout-func-args))
+         (when old-tip
+           (message "You can recover the old %s as %s" branch old-tip)
+           (sit-for 1))
          (git-after-working-dir-change repo-dir))))))
+
+
+(defun git--guess-start-candidate ()
+  "Guesses a start commit based on log view or branch mode. Should always
+be prompted for for confirmation."
+  (if (eq major-mode 'git-branch-mode) (git-branch-mode-selected t)
+    (if (eq major-mode 'git-log-view-mode)
+        ;; We know log-view is require'd if in this view. Don't barf if fails.
+        (git--abbrev-commit
+         (ignore-errors (with-no-warnings (log-view-current-tag))))
+      nil)))
+
+
+(defun git-new-branch (&optional branch suggested-start)
+  "Like `git-checkout-to-new-branch', but creates a branch without checking
+it out (i.e. 'git branch' rather than 'git checkout -b'). As such, does not
+need to do tree switching operations. When called from branch list buffers,
+refreshes them and puts cursor on the new branch for further operations."
+  (interactive (list nil (git--guess-start-candidate)))
+  (let* ((branch-prompt (git--prompt-new-branch-and-start
+                         branch suggested-start))
+         (branch (nth 0 branch-prompt))
+         (start (nth 1 branch-prompt))
+         (old-tip (nth 2 branch-prompt)))
+    (apply #'git--branch (delq nil (list (when old-tip "-f") branch start)))
+    ;; Since we expect this to be called with branch-mode open often, handle it.
+    (when (eq major-mode 'git-branch-mode) (git--branch-mode-refresh branch))
+    (when old-tip
+      (message "You can recover the old %s as %s" branch old-tip))
+    branch))
 
 (defun git-delete-branch (&optional branch)
   "Delete BRANCH, prompt the user if unspecified."
@@ -2180,16 +2245,18 @@ been displayed.")
 (let ((map (make-keymap)))
   (suppress-keymap map)
 
-  (define-key map "q"     'git--quit-buffer)
   (define-key map "n"     'next-line)
   (define-key map "p"     'previous-line)
 
+  (define-key map "s"     'git--branch-mode-switch)
+  (define-key map "l"     'git-log)
+  (define-key map "\C-m"  'git--branch-mode-switch)
+  (define-key map "c"     'git--branch-mode-create)
+  (define-key map "b"     'git-new-branch)
   (define-key map "d"     'git--branch-mode-delete)
   (define-key map (kbd "<delete>") 'git--branch-mode-delete)
-  (define-key map "c"     'git--branch-mode-create)
-  (define-key map "s"     'git--branch-mode-switch)
-  (define-key map "\C-m"  'git--branch-mode-switch)
   (define-key map "g"     'git--branch-mode-refresh)
+  (define-key map "q"     'git--quit-buffer)
 
   (setq git--branch-mode-map map))
 
@@ -2198,11 +2265,14 @@ been displayed.")
   `("Git-Branch"
     ["Next Line" next-line t]
     ["Previous Line" previous-line t]
+    ["Log for this Branch" git-log t]
     ["Switch To Branch" git--branch-mode-switch t]
-    ["Create New Branch..." git--branch-mode-create t]
+    ["Create and Switch Branch..." git--branch-mode-create t]
+    ["New Branch..." git-new-branch t]
     ["Delete Branch" git--branch-mode-delete t]
     ["Refresh" git--branch-mode-refresh t]
     ["Quit" git--quit-buffer t]))
+;; (makunbound 'git-branch-mode-map)       ;; eval to start over
 
 
 (defun git--branch-mode ()
@@ -2256,10 +2326,11 @@ example.")
 buffer")
 (make-variable-buffer-local 'git--branch-mode-branch-list)
 
-(defun git--branch-mode-refresh (&optional position-on-current)
+(defun git--branch-mode-refresh (&optional position-on)
   "Displays or refreshes the branch list in the branch-mode buffer.
-If POSITION-ON-CURRENT is true, put the cursor on the current branch; otherwise
-preserve the cursor position."
+If POSITION-ON is t, put the cursor on the current branch; if a
+string, find that branch instead; otherwise preserve the cursor
+position."
   (interactive)
 
   ;; Set the working dir to the top-level dir. Otherwise it might have gone
@@ -2276,8 +2347,9 @@ preserve the cursor position."
          (line-number-after
           ;; Select either the current branch or the previously selected one.
           ;; Note that the buffer-pos and even line no could change wildly.
-          (+ 1 (or (position (if position-on-current current-branch
-                               (git-branch-mode-selected t))
+          (+ 1 (or (position (if (eq position-on t) current-branch
+                               (or position-on (git-branch-mode-selected t))
+                               position-on)
                              branch-list :test 'equal)
                    ;; If not found, just stay on the same line or the first.
                    (- (line-number-at-pos) 1)))))
@@ -2318,9 +2390,9 @@ preserve the cursor position."
     (ignore-errors (goto-line line-number-after))
     (when (> (line-number-at-pos) (length branch-list)) (forward-line -1))
     (move-to-column goal-column)
+    (when (fboundp 'hl-line-highlight) (hl-line-highlight))
 
     (setq git--branch-mode-branch-list branch-list)))
-
 
 (defun git-branch ()
   "Pop up a git branch mode buffer and return it."

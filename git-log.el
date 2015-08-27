@@ -6,7 +6,8 @@
 (require 'git-emacs)
 
 ;; Based off of log-view-mode, which has some nice functionality, like
-;; moving between comits
+;; moving between commits. It's also based on a different model than git,
+;; so we have to undo some things.
 (define-derived-mode git-log-view-mode
   log-view-mode "Git-Log" "Major mode for viewing git logs"
   :group 'git
@@ -52,6 +53,7 @@
 
   (define-key map "m" 'set-mark-command) ; came with log-view-mode, nice idea
   (define-key map "d" 'git-log-view-diff-preceding)
+  (define-key map "=" 'git-log-view-diff-preceding) ; a log-view mode key
   (define-key map "D" 'git-log-view-diff-current)
   
   (define-key map "c" 'git-log-view-cherry-pick)
@@ -59,11 +61,18 @@
   (define-key map "r" 'git-log-view-reset)
   (define-key map "v" 'git-log-view-revert)
   (define-key map "t" 'git-log-view-tag)
+  (define-key map "b" 'git-log-view-branch)
 
   (define-key map "f" 'git-log-view-visit-file)
 
+  (define-key map "l" 'git-log-other)
+  (define-key map "S" 'git-log-dontpanic-reflog)
   (define-key map "g" 'git-log-view-refresh)
-  (define-key map "q" 'git--quit-buffer))
+  (define-key map "q" 'git--quit-buffer)
+  ;; Suppress the log-view menu. Many items are broken beyond repair when
+  ;; applied to git.
+  (define-key map [menu-bar Log-View] 'undefined)
+  )
 
 
 ;; Menu
@@ -71,13 +80,14 @@
  git-log-view-menu git-log-view-mode-map
  "Git"
  `("Git-Log"
-   ["Next Commit" log-view-msg-next t]
-   ["Previous Commit" log-view-msg-prev t]
+   ;; With log-view's key alternatives, menu sometimes picks wrong ones.
+   ["Next Commit" log-view-msg-next :keys "n"]
+   ["Previous Commit" log-view-msg-prev :keys "p"]
    ["Next Interesting Commit" git-log-view-interesting-commit-next t]
    ["Previous Interesting Commit" git-log-view-interesting-commit-prev t]
    "---"
-   ["Mark Commits for Diff" set-mark-command t]
-   ["Diff Commit(s)" git-log-view-diff-preceding t]
+   ["Mark Commits for Diff" set-mark-command :keys "m"]
+   ["Diff Commit(s)" git-log-view-diff-preceding :keys "d"]
    ["Diff against Current" git-log-view-diff-current t]
    "---"
    ["Reset Branch to Commit" git-log-view-reset t]
@@ -85,14 +95,18 @@
    ["Cherry-pick" git-log-view-cherry-pick t]
    ["Revert Commit" git-log-view-revert t]
    ["Tag this Commit..." git-log-view-tag t]
+   ["Branch from this Commit..." git-log-view-branch t]
    "---"
    ["Visit File at this Commit" git-log-view-visit-file t]
    "---"
+   ["Open Another Log..." git-log-other t]
+   ["Apply Log Options..." git-log-view-apply-custom t]
    ["Find Lost Commits with Reflog..." git-log-dontpanic-reflog t]
    ["Refresh" git-log-view-refresh t]
    ["Quit" git--quit-buffer t]))
 ;; Eval below to start over (then eval-buffer).
 ;; (makunbound 'git-log-view-mode-map)
+
 
 ;; Extra navigation
 ;; Right now this just moves between merges, but it would be nice to move
@@ -132,7 +146,7 @@ set keys, insert text, etc.")
 
 
 (defcustom git-log-view-additional-log-options nil
-  "Additional command-line flags for 'git log' when run `git-log-view-mode'.
+  "Additional command-line flags for 'git log' when run in `git-log-view-mode'.
 For example, '(\"--decorate\" \"--abbrev-commit\")."
   :type '(repeat string)
   :options '("--decorate" "--abbrev-commit") ; only suggestions.
@@ -235,9 +249,10 @@ git-status-mode."
                    (list buffer-file-name))))
  
 (defun git-log ()
-  "Launch the git log view for the whole repository."
+  "Launch the git log view for the whole repository. If called in a
+branch list buffer, log for the branch selected there instead of HEAD."
   (interactive)
-  (git--log-view))
+  (git--log-view nil (git-branch-mode-selected t)))
 
 (defun git-log-other (&optional commit)
   "Launch the git log view for another COMMIT, which is prompted for if
@@ -245,6 +260,7 @@ unspecified. You can then cherrypick commits from e.g. another branch
 using the `git-log-view-cherrypick'."
   (interactive (list (git--select-revision "View log for: ")))
   (git--log-view nil commit))
+
 
 ;; Take advantage of the nice git-log-view from the command line.
 ;; Recipes:
@@ -360,9 +376,19 @@ the working dir."
 
 (defun git-log-view-tag (&optional tag-name)
   "Create a new tag for commit that the cursor is on."
-
   (interactive)
   (git-tag tag-name (git--abbrev-commit (log-view-current-tag))))
+
+
+(defun git-log-view-branch (&optional branch)
+  "Pops up the git-branch buffer and prompts for a branch starting at
+the current `git-log-view-mode' commit. Does not check it out, but
+leaves cursor on it."
+  (interactive)
+  (let ((current-tag (log-view-current-tag))) ;; before we switch buffers
+    (git-branch)
+    (redisplay t)
+    (git-new-branch branch current-tag)))
 
 
 (defun git--log-view-need-filename (prompt &optional allow-nonexisting)

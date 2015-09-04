@@ -1285,18 +1285,17 @@ commit, like git commit --amend will do once we commit."
 ;; Internal variables for commit
 (defvar git--commit-after-hook nil
   "Hooks to run after comitting (and killing) the commit buffer.")
-(defvar git--commit-args nil
+(defvar-local git--commit-args nil
   "Args to be passed to the current git commit once done editing.")
-(make-variable-buffer-local 'git--commit-args)
-(defvar git--commit-targets nil
+(defvar-local git--commit-targets nil
   "Records the targets parameter of `git-commit' in the current commit buffer")
-(make-variable-buffer-local 'git--commit-targets)
-(defvar git--commit-last-diff-file-buffer nil
+(defvar-local git--commit-last-diff-file-buffer nil
   "Stores last diff buffer launched from a commit buffer.")
-(make-variable-buffer-local 'git--commit-targets)
-(defvar git--commit-amend nil
+(defvar-local git--commit-amend nil
   "Records whether the current commit buffer is for a commit --amend")
-(make-variable-buffer-local 'git--commit-amend)
+
+(defvar-local git--commit-message-area nil
+  "Markers for the beginning and ending of the message area (cons begin end)")
 
 (defun git--commit-buffer ()
   "Called when the user commits, in the commit buffer (C-cC-c).
@@ -1304,22 +1303,12 @@ Trim the buffer log, commit runs any after-commit functions."
   (interactive)
 
   ;; check buffer
-  (unless (string= (buffer-name (current-buffer))
-                   git--commit-log-buffer)
-    (error "Execute git commit on %s buffer" git--commit-log-buffer))
+  (unless git--commit-message-area (error "Not in a git-commit buffer"))
 
-  ;; trail and commit
-  (save-excursion
-    (goto-char (point-min))
-
-    (let ((begin (search-forward git--log-sep-line nil t))
-          (end   (search-forward git--log-sep-line nil t)))
-      (when (and begin end)
-        (setq end (- end (length git--log-sep-line)))
-        ;; TODO sophisticated message
-        (message "%s" (apply #'git--commit
-                             (git--trim-string (buffer-substring begin end))
-                             git--commit-args)))))
+  (let ((text (buffer-substring (car git--commit-message-area)
+                                (cdr git--commit-message-area))))
+    (message "%s" (apply #'git--commit (git--trim-string text)
+                         git--commit-args)))
 
   ;; update state marks, either for the files committed or the whole repo
   (git--update-all-state-marks
@@ -1658,7 +1647,44 @@ button, or at the end of the file if it didn't create any."
         (with-current-buffer git--commit-log-buffer
           (set (make-local-variable 'git--commit-last-diff-file-buffer)
                buffer)))
-    )))
+      )))
+
+(defun git-commit-refresh-status ()
+  "Sets or refreshes the status section in a commit. Returns t if there is
+ [still] something to commit."
+  (interactive)
+  (unless git--commit-message-area (error "Not in a commit buffer"))
+  (let ((inhibit-read-only t) (rc nil) (buffer-undo-list buffer-undo-list))
+    (save-excursion
+      (goto-char (cdr git--commit-message-area))
+      (atomic-change-group
+        (delete-region (point) (point-max))
+        (insert git--log-sep-line "\n")
+        (git--please-wait "Reading git status"
+          (setq rc (apply #'git--commit-dryrun-compat t git--commit-args)))
+        ;; Buttonize files to be committed, with action=diff. Assume
+        ;; that the first block of files is the one to be committed, and all
+        ;; others won't be committed.
+        (goto-char (cdr git--commit-message-area))
+        (git--commit-buttonize-filenames t 'git--commit-diff-committed-link)
+        (git--commit-buttonize-filenames nil 'git--commit-diff-uncomitted-link)
+        (add-text-properties (cdr git--commit-message-area) (point-max)
+                             '(read-only t)))
+      (= 0 rc))))
+
+
+(defvar git-commit-buffer-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map "\C-c\C-c" 'git--commit-buffer)
+    (define-key map "\C-c\C-q" 'git--quit-buffer)
+    (define-key map "\C-c\C-g" 'git-commit-refresh-status)
+    map)
+  "Local keymap for git-commit buffers.")
+
+(defvar git-commit-help-msg
+  "Type \\[git--commit-buffer] to commit, \\[git--quit-buffer] to cancel, \\[git-commit-refresh-status] to refresh"
+  "Help message for commit buffer, before `substitute-command-keys'")
+;; (makunbound 'git--commit-help-msg)
 
 (defun git-commit (&optional amend targets prepend-status-msg)
   "Does git commit with a temporary prompt buffer. If AMEND or a prefix argument
@@ -1685,10 +1711,11 @@ Returns the buffer."
                                     ((listp targets) (cons "--" targets))
                                     (t (error "Invalid targets: %S" targets))))
             git--commit-amend amend)
-
-      (local-set-key "\C-c\C-c" 'git--commit-buffer)
-      (local-set-key "\C-c\C-q" 'git--quit-buffer)
+      (use-local-map git-commit-buffer-map)
+      (let ((inhibit-read-only t))
+        (remove-list-of-text-properties (point-min) (point-max) '(read-only)))
       (erase-buffer)
+      
       (flyspell-mode 0)               ; disable for the text we insert
       (cd current-dir)                ; if we reused the buffer
 
@@ -1700,7 +1727,8 @@ Returns the buffer."
 
       ;; real log space
       (insert (propertize git--log-sep-line 'face 'git--log-line-face) "\n")
-
+      (setq git--commit-message-area (cons (point-marker) nil))
+      (add-text-properties (point-min) (- (point) 1) '(read-only t))
       (insert "\n")
       ;; If amend, insert last commit msg.
       (when amend (insert (git--last-log-message)))
@@ -1714,27 +1742,13 @@ Returns the buffer."
             (insert "\n"))))
       (setq cur-pos (point))
       (insert "\n\n")
+      (setcdr git--commit-message-area (point-marker))
+      (unless (git-commit-refresh-status)
+        (kill-buffer nil)
+        (error "Nothing to commit%s"
+               (if (eq t targets) "" ", try git-commit-all")))
 
-      ;;git commit --dryrun or git status -- give same args as to commit
-      (insert git--log-sep-line "\n")
-      (git--please-wait "Reading git status"
-        (unless (eq 0 (apply #'git--commit-dryrun-compat t git--commit-args))
-          (kill-buffer nil)
-          (error "Nothing to commit%s"
-                 (if (eq t targets) "" ", try git-commit-all"))))
-
-      ;; Remove "On branch blah" it's redundant
-      (goto-char cur-pos)
-      (when (re-search-forward "^# On branch.*$" nil t)
-        (delete-region (line-beginning-position) (line-beginning-position 2)))
-
-      ;; Buttonize files to be committed, with action=diff. Assume
-      ;; that the first block of files is the one to be committed, and all
-      ;; others won't be committed.
-      (goto-char cur-pos)
-      (git--commit-buttonize-filenames t 'git--commit-diff-committed-link)
-      (git--commit-buttonize-filenames nil 'git--commit-diff-uncomitted-link)
-      ;; Delete diff buffers when we're gone
+        ;; Delete diff buffers when we're gone
       (add-hook 'kill-buffer-hook
                 #'(lambda()
                     (ignore-errors
@@ -1743,14 +1757,20 @@ Returns the buffer."
 
       ;; Set cursor to message area
       (goto-char cur-pos)
-
-      (when git--log-flyspell-mode (flyspell-mode t))
+      (mapcar #'(lambda (w) (set-window-point w cur-pos))
+              (get-buffer-window-list buffer))
+      
+      (when git--log-flyspell-mode
+        (flyspell-mode t)
+        (add-hook 'flyspell-incorrect-hook
+                  #'(lambda(beg end &rest ignored)
+                      (get-text-property beg 'read-only)) t t))
 
       ;; comment hook
       (run-hooks 'git-comment-hook)
 
-      (message "%sType 'C-c C-c' to commit, 'C-c C-q' to cancel"
-               (or prepend-status-msg "")))
+      (message "%s%s" (or prepend-status-msg "")
+               (substitute-command-keys git-commit-help-msg)))
     (pop-to-buffer buffer)
     buffer))
 

@@ -1601,13 +1601,22 @@ not nil in other cases (reserved)."
     ("^#?\t\\([[:alnum:] ]+:\\) " (1 'git--bold-face))))
 ;; (makunbound 'git--commit-status-font-lock-keywords)
 
+(defvar git-commit-button-keymap
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map button-map)
+    (define-key map "v" 'git--commit-visit-file)
+    map)
+  "Keymap for file buttons in git-commit buffers")
+;; (makunbound 'git-commit-button-keymap)
 
 (define-button-type 'git--commit-diff-committed-link
   'help-echo "mouse-2, RET: view changes that will be committed"
-  'action 'git--commit-diff-file 'follow-link t)
+  'action 'git--commit-diff-file 'follow-link t
+  'keymap git-commit-button-keymap)
 (define-button-type 'git--commit-diff-uncomitted-link
   'help-echo "mouse-2, RET: view changes that will NOT be committed"
-  'action 'git--commit-diff-file 'follow-link t)
+  'action 'git--commit-diff-file 'follow-link t
+  'keymap git-commit-button-keymap)
 
 (defun git--commit-buttonize-filenames (single-block type)
   "Makes clickable buttons (aka hyperlinks) from filenames in git-status
@@ -1649,6 +1658,10 @@ button, or at the end of the file if it didn't create any."
                buffer)))
       )))
 
+(defun git--commit-visit-file ()
+  (interactive)
+  (find-file-other-window (button-label (button-at (point)))))
+
 (defun git-commit-refresh-status ()
   "Sets or refreshes the status section in a commit. Returns t if there is
  [still] something to commit."
@@ -1672,14 +1685,25 @@ button, or at the end of the file if it didn't create any."
                              '(read-only t)))
       (= 0 rc))))
 
+(defun git-commit-goto-next (&optional up)
+  "Navigates to the next file button, or back to message area when done."
+  (interactive "P")
+  (let ((start (point)))
+    (unless (ignore-errors (forward-button (if up -1 1) nil t))
+      (goto-char (- (cdr git--commit-message-area) 1))
+      (if (and up (< start (point))) (ignore-errors (forward-button -1 t t)))
+      (when (bolp) (backward-char 1)))))
+         
 
 (defvar git-commit-buffer-map
   (let ((map (make-sparse-keymap)))
     (define-key map "\C-c\C-c" 'git--commit-buffer)
     (define-key map "\C-c\C-q" 'git--quit-buffer)
     (define-key map "\C-c\C-g" 'git-commit-refresh-status)
+    (define-key map [tab] 'git-commit-goto-next)
     map)
   "Local keymap for git-commit buffers.")
+;; (makunbound 'git-commit-buffer-map)
 
 (defvar git-commit-help-msg
   "Type \\[git--commit-buffer] to commit, \\[git--quit-buffer] to cancel, \\[git-commit-refresh-status] to refresh"

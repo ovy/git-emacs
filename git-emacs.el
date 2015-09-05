@@ -300,6 +300,12 @@ git return code."
   "Joins the strings in SEQ with the SEP (defaults to blank)."
   (mapconcat #'identity seq (if sep sep " ")))
 
+
+(defmacro git--delete-str (str lst)
+  "Deletes a string from LST, with mutation, if present. LST should be
+should be a setf-style reference, typically a variable, unquoted."
+  `(setf ,lst (cl-delete ,str ,lst :test #'string=)))
+
 (defsubst git--concat-path-only (path added)
   "Concatenate the path with proper separator"
   (concat (file-name-as-directory path) added))
@@ -1622,7 +1628,7 @@ not nil in other cases (reserved)."
 
 
 (defun git--commit-button-make-keymap (title &rest bindings)
-  (declare '(indent defun))
+  (declare (indent defun))
   (let ((map (make-sparse-keymap title)))
     (suppress-keymap map)
     (define-key map (kbd "TAB") '("Cycle files and message" .
@@ -1643,13 +1649,12 @@ not nil in other cases (reserved)."
     map))
 
 (defvar git-commit-button-keymap
-  (git--commit-button-make-keymap
-   "File vs commit"
-   "i" '("Stage interactively" . git--commit-add-interactively)
-   "v" '("Visit file" . git--commit-visit-file)
-   "a" '("Add to index" . git--commit-add-to-index)
-   " " '("Toggle in/out of commit" . git--commit-button-toggle)
-   (kbd "RET") '("View changes" . git--commit-diff-file))
+  (git--commit-button-make-keymap "File vs commit"
+    "i" '("Stage interactively" . git--commit-add-interactively)
+    "v" '("Visit file" . git--commit-visit-file)
+    "a" '("Add to index" . git--commit-add-to-index)
+    " " '("Toggle in/out of commit" . git--commit-button-toggle)
+    (kbd "RET") '("View changes" . git--commit-diff-file))
   "Keymap for tracked file buttons in `git-commit' buffers")
 ;; (makunbound 'git-commit-button-keymap)   ;; and re-eval buttons below
 
@@ -1667,12 +1672,11 @@ not nil in other cases (reserved)."
   'help-echo (concat "mouse2, RET: visit this file; SPC: add; "
                      "mouse-3, ?: more options")
   'action 'git--commit-visit-file 'follow-link t 'face 'shadow
-  'keymap (git--commit-button-make-keymap ;; too lazy for defvar fanfare
-           "Untracked file"
-           "a" 'git--commit-add-to-index ;; For consistency
-           "v" 'git--commit-visit-file   ;; for consistency
-           " " '("Add to git" . git--commit-add-to-index)
-           (kbd "RET") '("Visit this file". git--commit-visit-file)))
+  'keymap (git--commit-button-make-keymap "Untracked file"
+            "a" 'git--commit-add-to-index ;; For consistency
+            "v" 'git--commit-visit-file   ;; for consistency
+            " " '("Add to git" . git--commit-add-to-index)
+            (kbd "RET") '("Visit this file". git--commit-visit-file)))
 
 (defun git--commit-buttonize-filenames (single-block type)
   "Makes clickable buttons (aka hyperlinks) from filenames with
@@ -1682,13 +1686,24 @@ a simple regexp.  If SINGLE-BLOCK, stops after the first
 one line after a filename. The buttons created are of the given
 TYPE. Leaves the cursor at the end of the last button, or at the
 end of the file if it didn't create any. "
-  (let (last-match-pos)
-    (while (and (re-search-forward "^#?\t[[:alnum:] ]+: +\\(.*\\)" nil t)
+  (let (last-match-pos was-rename)
+    (while (and (re-search-forward "^#?\t\\([[:alnum:] ]+\\): +\\(.*\\)" nil t)
                 (or (not single-block)
                     (not last-match-pos)
                     (<= (count-lines last-match-pos (point)) 2)))
-      (make-text-button (match-beginning 1) (match-end 1)
-                        'type type)
+      ;; Handle renamed case. A little ugly.
+      (setq was-rename nil)
+      (let ((case-fold-search nil))
+        (when (string-match-p "rename" (match-string 1))
+          (save-match-data
+            (save-excursion
+              (goto-char (match-beginning 2))
+              (when (looking-at "\\(.*\\) -> \\(.*\\)")
+                (make-text-button (match-beginning 1) (match-end 1) 'type type)
+                (make-text-button (match-beginning 2) (match-end 2) 'type type)
+                (setq was-rename t))))))
+      (unless was-rename
+        (make-text-button (match-beginning 2) (match-end 2) 'type type))
       (setq last-match-pos (point)))
     (when last-match-pos (goto-char last-match-pos))))
 
@@ -1749,9 +1764,6 @@ be called above the corresponding section ONLY."
     (let ((key (x-popup-menu menu-pos keymap))) ;; f-in' call the function!
       (setq unread-command-events (append key unread-command-events)))))
 
-(defmacro git--delete-str (str listvar)
-  "Deletes a string from variable LISTVAR, if present."
-  `(setq ,listvar (cl-delete ,str ,listvar :test #'string=)))
 
 (defun git--commit-button-toggle ()
   (interactive)

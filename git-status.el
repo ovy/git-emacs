@@ -840,7 +840,7 @@ current line. You can think of this as the \"selected files\"."
   (let* ((files (git--status-view-marked-or-file))
          ;; We can't afford to use stale fileinfos here, the warnings
          ;; are crucial.
-         (fresh-fileinfos (append (apply #'git--status-index files)
+         (fresh-fileinfos (append (git--status-index files)
                                   (apply #'git--ls-files "-o" "--" files)))
          (untracked-files nil) (pending-files nil))
     (dolist (fi fresh-fileinfos)

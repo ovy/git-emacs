@@ -168,7 +168,7 @@ doing update--state-mark for each buffer."
             (puthash relative-name (cons buffer nil) file-index)
             (push relative-name all-relative-names)))
         ;; Execute status-index to find out the changed files
-        (dolist (fi (apply #'git--status-index all-relative-names))
+        (dolist (fi (git--status-index all-relative-names))
           (setcdr (gethash (git--fileinfo->name fi) file-index)
                   (git--fileinfo->stat fi)))
         ;; The remaining files are probably unchanged, do ls-files

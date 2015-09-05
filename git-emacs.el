@@ -361,7 +361,7 @@ autoloading which we know has already happened."
    (let ((cdup (git--rev-parse "--show-cdup")))
      (git--concat-path default-directory (car (split-string cdup "\n"))))))
 
-(defsubst git--interpret-to-state-symbol (stat)
+(defun git--interpret-to-state-symbol (stat)
   "Interpret a one-letter git state string to our state symbols."
   (case (string-to-char stat)
     (?H 'uptodate )
@@ -373,6 +373,7 @@ autoloading which we know has already happened."
     (?T 'modified )
     (?K 'killed   )
     (t nil)))
+
 
 (defsubst git--build-reg (&rest args)
   (apply #'concat (add-to-list 'args "\0" t)))
@@ -685,15 +686,19 @@ nil if none."
   "Get the list of known git tags, which may not always refer to commit objects"
   (split-string (git--tag "-l") "\n" t))
 
-(defsubst git--diff-raw (args &rest files)
+(defun git--diff-raw (args &rest files)
   "Execute 'git diff --raw' with 'args' and 'files' at current buffer. This
 gives, essentially, file status."
   ;; git-diff abbreviates by default, and also produces a diff.
   (apply #'git--exec-buffer "diff" "-z" "--full-index" "--raw" "--abbrev=40"
          (append args (list "--") files)))
 
-(defun git--status-index (&rest files)
-  "Execute 'git-status-index' and return list of 'git--fileinfo'"
+(defun git--status-index (&optional files versus relative)
+  "Shows the differences between working tree and VERSUS (defaults to HEAD),
+limiting to FILES. VERSUS can be an arbitrary revision, t for
+diffing vs index, a list of two revisions, or '(t revision) for
+diffing the index vs that revision. If RELATIVE is non-nil paths
+will be relative to default-directory."
 
   ;; update fileinfo -> unmerged index
   (let ((fileinfo nil)
@@ -710,7 +715,9 @@ gives, essentially, file status."
                                 git--reg-status  ; matched-5
                                 git--reg-eof
                                 git--reg-file    ; matched-6
-                                )))
+                                ))
+        ;; diff --relative is, of course, worthless :(
+        (unrelativize (when relative (git--get-top-dir))))
 
     (dolist (stage-and-fi (git--ls-unmerged))
       ;; ignore the different stages, since we're not using the sha1s
@@ -719,7 +726,12 @@ gives, essentially, file status."
                unmerged-info))
 
     (with-temp-buffer
-      (apply #'git--diff-raw (list "HEAD") files)
+      (if (null versus) (setq versus (list "HEAD"))
+        (if (eq t versus) (setq versus '())
+          (unless (listp versus) (setq versus (list versus)))
+          (when (eq (car versus) t)
+            (setq versus (cons "--cached" (cdr versus))))))
+      (apply #'git--diff-raw versus files)
 
       (goto-char (point-min))
 
@@ -736,10 +748,14 @@ gives, essentially, file status."
                                  "0000000000000000000000000000000000000000")))
             (setq stat 'staged))
 
+          (when unrelativize
+            (let ((swap default-directory) (default-directory unrelativize))
+              (setq file (file-relative-name file swap))))
           ;; assume all listed elements are 'blob
           (push (git--create-fileinfo file 'blob nil perm nil stat) fileinfo))))
 
     fileinfo))
+
 
 (defun git--symbolic-ref (arg)
   "Execute 'git symbolic-ref ARG' and return the sha1 string, or nil if the
@@ -918,7 +934,7 @@ find alternate names or search for the location of a commit."
 
 (defun git--status-file (file)
   "Return the git status of FILE, as a symbol."
-  (let ((fileinfo (git--status-index file)))
+  (let ((fileinfo (git--status-index (list file))))
     (unless fileinfo (setq fileinfo (git--ls-files file)))
     (when (= 1 (length fileinfo))
       (git--fileinfo->stat (car fileinfo)))))
@@ -1289,6 +1305,9 @@ commit, like git commit --amend will do once we commit."
   "Args to be passed to the current git commit once done editing.")
 (defvar-local git--commit-targets nil
   "Records the targets parameter of `git-commit' in the current commit buffer")
+(defvar-local git--commit-index-plus-targets nil
+  "Whether `git-commit' in the current buffer should commit *both* the index \
+and `git--commit-targets', as opposed to their intersection (see commit -i)")
 (defvar-local git--commit-last-diff-file-buffer nil
   "Stores last diff buffer launched from a commit buffer.")
 (defvar-local git--commit-amend nil
@@ -1602,19 +1621,29 @@ not nil in other cases (reserved)."
 ;; (makunbound 'git--commit-status-font-lock-keywords)
 
 (defvar git-commit-button-keymap
-  (let ((map (make-sparse-keymap)))
+  (let ((map (make-sparse-keymap "File vs commit")))
+    ;; Reverse order and help text, for menu.
+    (define-key map "i" '("Stage interactively"
+                          . git--commit-add-interactively))
+    (define-key map "v" '("Visit file" . git--commit-visit-file))
+    (define-key map " "
+      '("Toggle in/out of commit" . git--commit-button-toggle))
+    (define-key map (kbd "RET") '("View changes" . git--commit-diff-file))
+    (define-key map (kbd "?") 'git--button-keymap-help)
+    (define-key map [mouse-3] 'git--button-keymap-help)
     (set-keymap-parent map button-map)
-    (define-key map "v" 'git--commit-visit-file)
     map)
   "Keymap for file buttons in git-commit buffers")
-;; (makunbound 'git-commit-button-keymap)
+;; (makunbound 'git-commit-button-keymap)   ;; and re-eval buttons below
 
 (define-button-type 'git--commit-diff-committed-link
-  'help-echo "mouse-2, RET: view changes that will be committed"
+  'help-echo (concat "mouse-2, RET: view changes that will be committed; "
+                     "mouse-3, ?: more options")
   'action 'git--commit-diff-file 'follow-link t
   'keymap git-commit-button-keymap)
 (define-button-type 'git--commit-diff-uncomitted-link
-  'help-echo "mouse-2, RET: view changes that will NOT be committed"
+  'help-echo (concat "mouse-2, RET: view changes that will NOT be committed; "
+                     "mouse-3, ?: more options")
   'action 'git--commit-diff-file 'follow-link t
   'keymap git-commit-button-keymap)
 
@@ -1635,14 +1664,16 @@ button, or at the end of the file if it didn't create any."
       (setq last-match-pos (point)))
     (when last-match-pos (goto-char last-match-pos))))
 
-(defun git--commit-diff-file (button)
+(defun git--commit-diff-file (&optional button)
   "Click handler for filename links in the commit buffer"
+  (interactive (list (button-at (point))))
   (with-current-buffer git--commit-log-buffer
     ; Compute rev1, rev2 inputs to diff--many
     (let ((diff-from (if git--commit-amend "HEAD^1" "HEAD"))
-          (diff-to nil))
+          (diff-to nil) (file (button-label button)))
       ;; the commit-index case is the complicated one, adjust.
-      (if (eq nil git--commit-targets)
+      (unless (or (eq t git--commit-targets)
+                  (member file git--commit-targets))
           (if (eq (button-type button) 'git--commit-diff-committed-link)
               (setq diff-to t)          ; diff HEAD -> index
             (setq diff-from nil))       ; diff index -> working
@@ -1650,7 +1681,7 @@ button, or at the end of the file if it didn't create any."
       ;; Use diff--many which is much less intrusive than ediff. Reuse the
       ;; same buffer so the user can easily look at multiple files in turn.
       (let ((buffer
-            (git--diff-many (list (button-label button)) diff-from diff-to t
+            (git--diff-many (list file) diff-from diff-to t
                             git--commit-last-diff-file-buffer)))
         ;; Subtle: git-diff-many switched buffers
         (with-current-buffer git--commit-log-buffer
@@ -1658,41 +1689,118 @@ button, or at the end of the file if it didn't create any."
                buffer)))
       )))
 
+(defun git--button-keymap-help (&optional event)
+  "Displays popup menu (which also functions as help) for a button keymap."
+  (interactive)
+  (unless (get-char-property (point) 'keymap) (error "No keymap button here"))
+  (let ((posn (or event (list (list (car (posn-x-y (posn-at-point)))
+                                    (cdr (posn-x-y (posn-at-point)))) ; JFC cons
+                              (posn-window (posn-at-point))))))
+    (x-popup-menu posn (get-char-property (point) 'keymap))))
+
+(defmacro git--delete-str (str listvar)
+  `(setq ,listvar (cl-delete ,str ,listvar :test #'string=)))
+
+(defun git--commit-button-toggle ()
+  (interactive)
+  (let* ((button (or (button-at (point)) (user-error "No commit file here")))
+         (type (button-type button)) (file (button-label button))
+         (short-file (file-name-nondirectory file))
+         (commit-target (if git--commit-amend "HEAD^1" "HEAD")))
+    (when (eq type 'git--commit-diff-committed-link)
+      (cond
+       ((or (eq t git--commit-targets) (member file git--commit-targets))
+        ;; Take it out of forced filelist.
+        (when (eq t git--commit-targets) ;; Need to resolve it: modifs vs HEAD
+          (git--please-wait "Reading git status..."
+            (setq git--commit-targets
+                  (mapcar #'git--fileinfo->name
+                          (git--status-index nil nil t)))))
+        (git--delete-str file git--commit-targets)
+        (if (or git--commit-targets git--commit-index-plus-targets)
+            (message "Removed %s from commit filelist" short-file)
+          (setq git--commit-index-plus-targets nil)
+          (message "Commit filelist became empty; back to an index commit")))
+      ((git--status-index (list file) (list t commit-target))
+          ;; This requires a reset NOW (i.e. possible dataloss)
+        (when (y-or-n-p (format "Reset %s%s out of commit? " short-file
+                                (if (git--status-index (list file) t)
+                                    " (PARTIALLY STAGED)" "")))
+          (git--reset commit-target "--" file)))))
+
+    (when (eq type 'git--commit-diff-uncomitted-link)
+      ;; Don't know how they could get here from a commit --dry-run -a.
+      (when (eq t git--commit-targets) (error "Weird case, please report"))
+      (when (eq nil git--commit-targets)
+        (setq git--commit-index-plus-targets t))
+      
+      (add-to-list 'git--commit-targets file t #'string=)
+      (message "Added %s to commit filelist" short-file)))
+  (git-commit-refresh-status))
+
 (defun git--commit-visit-file ()
   (interactive)
   (find-file-other-window (button-label (button-at (point)))))
+
+(defun git--commit-add-interactively ()
+  (interactive)                         ; hehe
+  (find-file-other-window (button-label (button-at (point))))
+  (git-add-interactively))               ; maybe could come back here.
 
 (defun git-commit-refresh-status ()
   "Sets or refreshes the status section in a commit. Returns t if there is
  [still] something to commit."
   (interactive)
   (unless git--commit-message-area (error "Not in a commit buffer"))
-  (let ((inhibit-read-only t) (rc nil) (buffer-undo-list buffer-undo-list))
+  (setq git--commit-args (append
+                          (when git--commit-amend '("--amend"))
+                          (cond ((eq nil git--commit-targets) '())
+                                ((eq t git--commit-targets) '("-a"))
+                                ((listp git--commit-targets)
+                                 (append
+                                  (when git--commit-index-plus-targets '("-i"))
+                                  '("--") git--commit-targets))
+                                (t (error "Invalid targets: %S"
+                                          git--commit-targets)))))
+  (let ((inhibit-read-only t) (rc nil) (buffer-undo-list buffer-undo-list)
+        (line (line-number-at-pos (point))))
     (save-excursion
       (goto-char (cdr git--commit-message-area))
       (atomic-change-group
         (delete-region (point) (point-max))
         (insert git--log-sep-line "\n")
-        (git--please-wait "Reading git status"
+        (with-temp-message "Reading git status..."
           (setq rc (apply #'git--commit-dryrun-compat t git--commit-args)))
         ;; Buttonize files to be committed, with action=diff. Assume
         ;; that the first block of files is the one to be committed, and all
         ;; others won't be committed.
         (goto-char (cdr git--commit-message-area))
-        (git--commit-buttonize-filenames t 'git--commit-diff-committed-link)
-        (git--commit-buttonize-filenames nil 'git--commit-diff-uncomitted-link)
+        ;; Corner case: the commit can become empty by filelist manipulation.
+        (when (= rc 0)
+          (git--commit-buttonize-filenames t 'git--commit-diff-committed-link))
+        (git--commit-buttonize-filenames nil
+                                         'git--commit-diff-uncomitted-link)
         (add-text-properties (cdr git--commit-message-area) (point-max)
-                             '(read-only t)))
-      (= 0 rc))))
+                             '(read-only t))))
+    ;; When in button area, be a little smarter about same-position.
+    (when (>= (point) (cdr git--commit-message-area))
+      (forward-line (- line (line-number-at-pos (point))))
+      (unless (git-commit-goto-next) (git-commit-goto-next)))
+      
+    (= 0 rc)))
 
 (defun git-commit-goto-next (&optional up)
-  "Navigates to the next file button, or back to message area when done."
+  "Navigates to the next file button, or back to message area
+when done. Returns the button in former case, nil in the latter."
   (interactive "P")
   (let ((start (point)))
-    (unless (ignore-errors (forward-button (if up -1 1) nil t))
-      (goto-char (- (cdr git--commit-message-area) 1))
-      (if (and up (< start (point))) (ignore-errors (forward-button -1 t t)))
-      (when (bolp) (backward-char 1)))))
+    (or (ignore-errors (forward-button (if up -1 1) nil nil))
+        (progn 
+          (goto-char (- (cdr git--commit-message-area) 1))
+          (if (and up (< start (point)))
+              (ignore-errors (forward-button -1 t nil))
+            (when (bolp) (backward-char 1))
+            nil)))))
          
 
 (defvar git-commit-buffer-map
@@ -1726,15 +1834,8 @@ Returns the buffer."
         (buffer (get-buffer-create git--commit-log-buffer))
         (current-dir default-directory))
     (with-current-buffer buffer
-      ;; Tell git--commit-buffer what to do
-      (setq git--commit-targets targets
-            git--commit-args (append
-                              (when amend '("--amend"))
-                              (cond ((eq nil targets) '())
-                                    ((eq t targets) '("-a"))
-                                    ((listp targets) (cons "--" targets))
-                                    (t (error "Invalid targets: %S" targets))))
-            git--commit-amend amend)
+      ;; Tell git--commit-buffer what to do (refresh does actual args)
+      (setq git--commit-targets targets git--commit-amend amend)
       (use-local-map git-commit-buffer-map)
       (let ((inhibit-read-only t))
         (remove-list-of-text-properties (point-min) (point-max) '(read-only)))
@@ -1781,8 +1882,8 @@ Returns the buffer."
 
       ;; Set cursor to message area
       (goto-char cur-pos)
-      (mapcar #'(lambda (w) (set-window-point w cur-pos))
-              (get-buffer-window-list buffer))
+      (mapc #'(lambda (w) (set-window-point w cur-pos))
+            (get-buffer-window-list buffer))
       
       (when git--log-flyspell-mode
         (flyspell-mode t)
@@ -2727,7 +2828,7 @@ that variable in .emacs.
                                          "hash-object"
                                          index-buf
                                          "-t" "blob" "-w" "--stdin")))
-                     (fileinfo (car-safe (git--status-index filename))))
+                     (fileinfo (car-safe (git--status-index (list filename)))))
                  ;; update index with the new object
                  (git--exec-string
                   "update-index" "--cacheinfo"

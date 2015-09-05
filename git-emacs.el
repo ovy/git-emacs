@@ -784,10 +784,10 @@ git's user-friendly name, e.g. (HEAD detached at 234abc)."
   (git--trim-string (git--log "--max-count=1" "--pretty=oneline"
                               "--abbrev-commit")))
 
-(defsubst git--last-log-message ()
+(defun git--last-log-message ()
   "Return the last commit message, as a possibly multiline string, with an "
-  "ending newline,"
-  (git--log "--max-count=1" "--pretty=format:%s%n%b"))
+  "ending newline."
+  (git--log "--max-count=1" "--pretty=format:%B"))
 
 (defun git--get-relative-to-top(filename)
   (file-relative-name filename
@@ -1284,19 +1284,16 @@ commit, like git commit --amend will do once we commit."
 
   ;; TODO: we should make git always use this info, even if its config
   ;; has changed. Otherwise this is misleading.
-  (insert git--log-header-line  "\n"
-          "# Branch : " (or (git--current-branch) "<none>")     "\n")
+  (insert git--log-header-line  "\n")
   (if amend
       (insert (git--log "--max-count=1"
                         (concat "--pretty=format:"
-                                "# Author : %an%n"
-                                "# Email  : %ae%n"
+                                "# Author : %an <%ae>%n"
                                 "# Date   : %ci%n"
                                 "# Amend  : %h%n")))
-    (insert
-     "# Author : " (git--config-get-author)  "\n"
-     "# Email  : " (git--config-get-email)   "\n"
-     "# Date   : " (git--today)              "\n")))
+    (insert (format "# Author : %s <%s>\n"
+                    (git--config-get-author)  (git--config-get-email))
+            "# Date   : " (git--today) "\n")))
 
 ;; Internal variables for commit
 (defvar git--commit-after-hook nil
@@ -1343,6 +1340,8 @@ Trim the buffer log, commit runs any after-commit functions."
 
     ;; hooks (e.g. switch branch)
     (run-hooks 'local-git--commit-after-hook 'git--commit-after-hook)))
+
+(put 'git--commit-buffer :advertised-binding (kbd "C-c C-c"))
 
 ;;-----------------------------------------------------------------------------
 ;; Merge support.
@@ -1617,11 +1616,13 @@ not nil in other cases (reserved)."
     ("^# \\(-----*[^-]+-----*\\).*$" (1 'git--log-line-face))
     ;; The below highlights "modified", etc. If it stops working (which it has
     ;; in the past), also change buttonize-filenames below.
-    ("^#?\t\\([[:alnum:] ]+:\\) " (1 'git--bold-face))))
+    ("^#?\t\\([[:alnum:] ]+:\\) " (1 'git--bold-face))
+    ("On branch \\(\\S *\\)" (1 'git--bold-face))))
 ;; (makunbound 'git--commit-status-font-lock-keywords)
 
 (defvar git-commit-button-keymap
   (let ((map (make-sparse-keymap "File vs commit")))
+    (suppress-keymap map)
     ;; Reverse order and help text, for menu.
     (define-key map "i" '("Stage interactively"
                           . git--commit-add-interactively))
@@ -1630,7 +1631,8 @@ not nil in other cases (reserved)."
       '("Toggle in/out of commit" . git--commit-button-toggle))
     (define-key map (kbd "RET") '("View changes" . git--commit-diff-file))
     (define-key map (kbd "?") 'git--button-keymap-help)
-    (define-key map [mouse-3] 'git--button-keymap-help)
+    (define-key map [down-mouse-3] 'git--button-keymap-help)
+    (define-key map [mouse-3] 'ignore)
     (set-keymap-parent map button-map)
     map)
   "Keymap for file buttons in git-commit buffers")
@@ -1689,14 +1691,26 @@ button, or at the end of the file if it didn't create any."
                buffer)))
       )))
 
-(defun git--button-keymap-help (&optional event)
+(defun git--button-keymap-help ()
   "Displays popup menu (which also functions as help) for a button keymap."
   (interactive)
-  (unless (get-char-property (point) 'keymap) (error "No keymap button here"))
-  (let ((posn (or event (list (list (car (posn-x-y (posn-at-point)))
-                                    (cdr (posn-x-y (posn-at-point)))) ; JFC cons
-                              (posn-window (posn-at-point))))))
-    (x-popup-menu posn (get-char-property (point) 'keymap))))
+  ;; Handle mouse properly; a little hard.
+  (let (menu-pos keymap)
+    (when (and (mouse-event-p last-nonmenu-event)
+               (posnp (event-start last-nonmenu-event)))
+      (let* ((pos (event-start last-nonmenu-event)) (window (posn-window pos)))
+        (when (and (windowp window) (null (posn-area pos)))
+          (select-window window)
+          (goto-char (posn-point pos))
+          (setq menu-pos last-nonmenu-event))))
+    (unless (setq keymap (get-char-property (point) 'keymap))
+      (error "No keymap button here"))
+    (unless menu-pos
+      (setq menu-pos (list (list (car (posn-x-y (posn-at-point)))
+                                 (cdr (posn-x-y (posn-at-point)))) ; JFC cons
+                           (posn-window (posn-at-point)))))
+    (let ((key (x-popup-menu menu-pos keymap))) ;; f-in' call the function!
+      (setq unread-command-events (append key unread-command-events)))))
 
 (defmacro git--delete-str (str listvar)
   `(setq ,listvar (cl-delete ,str ,listvar :test #'string=)))
@@ -1718,7 +1732,8 @@ button, or at the end of the file if it didn't create any."
                           (git--status-index nil nil t)))))
         (git--delete-str file git--commit-targets)
         (if (or git--commit-targets git--commit-index-plus-targets)
-            (message "Removed %s from commit filelist" short-file)
+            (message "Removed %s from commit filelist"
+                     (git--bold-face short-file))
           (setq git--commit-index-plus-targets nil)
           (message "Commit filelist became empty; back to an index commit")))
       ((git--status-index (list file) (list t commit-target))
@@ -1735,7 +1750,7 @@ button, or at the end of the file if it didn't create any."
         (setq git--commit-index-plus-targets t))
       
       (add-to-list 'git--commit-targets file t #'string=)
-      (message "Added %s to commit filelist" short-file)))
+      (message "Added %s to commit filelist" (git--bold-face short-file))))
   (git-commit-refresh-status))
 
 (defun git--commit-visit-file ()
@@ -1781,12 +1796,15 @@ button, or at the end of the file if it didn't create any."
         (git--commit-buttonize-filenames nil
                                          'git--commit-diff-uncomitted-link)
         (add-text-properties (cdr git--commit-message-area) (point-max)
-                             '(read-only t))))
+                             '(read-only t))
+        ;; Remove git's usage tips. We need the space, and they're on cmd line.
+        (goto-char (cdr git--commit-message-area))
+        (while (re-search-forward "^\\s +(use \"[^)]*) *\n" nil t)
+          (delete-region (match-beginning 0) (match-end 0)))))
     ;; When in button area, be a little smarter about same-position.
     (when (>= (point) (cdr git--commit-message-area))
       (forward-line (- line (line-number-at-pos (point))))
       (unless (git-commit-goto-next) (git-commit-goto-next)))
-      
     (= 0 rc)))
 
 (defun git-commit-goto-next (&optional up)
@@ -1835,7 +1853,8 @@ Returns the buffer."
         (current-dir default-directory))
     (with-current-buffer buffer
       ;; Tell git--commit-buffer what to do (refresh does actual args)
-      (setq git--commit-targets targets git--commit-amend amend)
+      (setq git--commit-targets targets git--commit-amend amend
+            git--commit-index-plus-targets nil)
       (use-local-map git-commit-buffer-map)
       (let ((inhibit-read-only t))
         (remove-list-of-text-properties (point-min) (point-max) '(read-only)))
@@ -1870,7 +1889,7 @@ Returns the buffer."
       (setcdr git--commit-message-area (point-marker))
       (unless (git-commit-refresh-status)
         (kill-buffer nil)
-        (error "Nothing to commit%s"
+        (user-error "Nothing to commit%s"
                (if (eq t targets) "" ", try git-commit-all")))
 
         ;; Delete diff buffers when we're gone
@@ -1883,7 +1902,7 @@ Returns the buffer."
       ;; Set cursor to message area
       (goto-char cur-pos)
       (mapc #'(lambda (w) (set-window-point w cur-pos))
-            (get-buffer-window-list buffer))
+            (get-buffer-window-list buffer nil t))
       
       (when git--log-flyspell-mode
         (flyspell-mode t)

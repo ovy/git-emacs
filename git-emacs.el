@@ -1620,22 +1620,37 @@ not nil in other cases (reserved)."
     ("On branch \\(\\S *\\)" (1 'git--bold-face))))
 ;; (makunbound 'git--commit-status-font-lock-keywords)
 
-(defvar git-commit-button-keymap
-  (let ((map (make-sparse-keymap "File vs commit")))
+
+(defun git--commit-button-make-keymap (title &rest bindings)
+  (declare '(indent defun))
+  (let ((map (make-sparse-keymap title)))
     (suppress-keymap map)
-    ;; Reverse order and help text, for menu.
-    (define-key map "i" '("Stage interactively"
-                          . git--commit-add-interactively))
-    (define-key map "v" '("Visit file" . git--commit-visit-file))
-    (define-key map " "
-      '("Toggle in/out of commit" . git--commit-button-toggle))
-    (define-key map (kbd "RET") '("View changes" . git--commit-diff-file))
+    (define-key map (kbd "TAB") '("Cycle files and message" .
+                                  git-commit-goto-next))
+    ;; Use forward-button here because button-next would stop in msg area.
+    (define-key map "p" `("Previous file" . ,#'(lambda() (interactive)
+                                                (forward-button -1 t))))
+    (define-key map "n" `("Next file" . ,#'(lambda() (interactive)
+                                            (forward-button 1 t))))
+    (while bindings
+      (define-key map (first bindings) (second bindings))
+      (setq bindings (cddr bindings)))
+    ;; These are not displayed (no menu text)
     (define-key map (kbd "?") 'git--button-keymap-help)
     (define-key map [down-mouse-3] 'git--button-keymap-help)
     (define-key map [mouse-3] 'ignore)
     (set-keymap-parent map button-map)
-    map)
-  "Keymap for file buttons in git-commit buffers")
+    map))
+
+(defvar git-commit-button-keymap
+  (git--commit-button-make-keymap
+   "File vs commit"
+   "i" '("Stage interactively" . git--commit-add-interactively)
+   "v" '("Visit file" . git--commit-visit-file)
+   "a" '("Add to index" . git--commit-add-to-index)
+   " " '("Toggle in/out of commit" . git--commit-button-toggle)
+   (kbd "RET") '("View changes" . git--commit-diff-file))
+  "Keymap for tracked file buttons in `git-commit' buffers")
 ;; (makunbound 'git-commit-button-keymap)   ;; and re-eval buttons below
 
 (define-button-type 'git--commit-diff-committed-link
@@ -1648,14 +1663,25 @@ not nil in other cases (reserved)."
                      "mouse-3, ?: more options")
   'action 'git--commit-diff-file 'follow-link t
   'keymap git-commit-button-keymap)
+(define-button-type 'git--commit-untracked-link
+  'help-echo (concat "mouse2, RET: visit this file; SPC: add; "
+                     "mouse-3, ?: more options")
+  'action 'git--commit-visit-file 'follow-link t 'face 'shadow
+  'keymap (git--commit-button-make-keymap ;; too lazy for defvar fanfare
+           "Untracked file"
+           "a" 'git--commit-add-to-index ;; For consistency
+           "v" 'git--commit-visit-file   ;; for consistency
+           " " '("Add to git" . git--commit-add-to-index)
+           (kbd "RET") '("Visit this file". git--commit-visit-file)))
 
 (defun git--commit-buttonize-filenames (single-block type)
-  "Makes clickable buttons (aka hyperlinks) from filenames in git-status
-outputs. The filenames are found with a simple regexp.
-If SINGLE-BLOCK, stops after the first \"block\" of files, i.e.
-when it would move forward more than one line after a filename. The buttons
-created are of the given TYPE. Leaves the cursor at the end of the last
-button, or at the end of the file if it didn't create any."
+  "Makes clickable buttons (aka hyperlinks) from filenames with
+modification status in git-status outputs. The filenames are found with
+a simple regexp.  If SINGLE-BLOCK, stops after the first
+\"block\" of files, i.e.  when it would move forward more than
+one line after a filename. The buttons created are of the given
+TYPE. Leaves the cursor at the end of the last button, or at the
+end of the file if it didn't create any. "
   (let (last-match-pos)
     (while (and (re-search-forward "^#?\t[[:alnum:] ]+: +\\(.*\\)" nil t)
                 (or (not single-block)
@@ -1666,6 +1692,17 @@ button, or at the end of the file if it didn't create any."
       (setq last-match-pos (point)))
     (when last-match-pos (goto-char last-match-pos))))
 
+;; We do have more powerful weapons at our disposal, but regexping the
+;; simple and familiar git commit message from a dryrun *with these exact
+;; params* feels okay to me. We could double check it I suppose.
+(defun git--commit-buttonize-untracked ()
+  "Like `git--commit-buttonize-filenames', but works on untracked files. Should
+be called above the corresponding section ONLY."
+  (while (re-search-forward "^#?\t *\\(.*\\)" nil t)
+    (make-text-button (match-beginning 1) (match-end 1)
+                      'type 'git--commit-untracked-link))) 
+
+    
 (defun git--commit-diff-file (&optional button)
   "Click handler for filename links in the commit buffer"
   (interactive (list (button-at (point))))
@@ -1713,6 +1750,7 @@ button, or at the end of the file if it didn't create any."
       (setq unread-command-events (append key unread-command-events)))))
 
 (defmacro git--delete-str (str listvar)
+  "Deletes a string from variable LISTVAR, if present."
   `(setq ,listvar (cl-delete ,str ,listvar :test #'string=)))
 
 (defun git--commit-button-toggle ()
@@ -1741,7 +1779,8 @@ button, or at the end of the file if it didn't create any."
         (when (y-or-n-p (format "Reset %s%s out of commit? " short-file
                                 (if (git--status-index (list file) t)
                                     " (PARTIALLY STAGED)" "")))
-          (git--reset commit-target "--" file)))))
+          (git--reset commit-target "--" file)
+          (git--update-all-state-marks (list file))))))
 
     (when (eq type 'git--commit-diff-uncomitted-link)
       ;; Don't know how they could get here from a commit --dry-run -a.
@@ -1753,9 +1792,28 @@ button, or at the end of the file if it didn't create any."
       (message "Added %s to commit filelist" (git--bold-face short-file))))
   (git-commit-refresh-status))
 
-(defun git--commit-visit-file ()
+(defun git--commit-visit-file (&optional button)
   (interactive)
-  (find-file-other-window (button-label (button-at (point)))))
+  (find-file-other-window (button-label (or button (button-at (point))))))
+
+(defun git--commit-add-to-index (&optional button)
+  (interactive (list
+                (or (button-at (point)) (user-error "No commit file here"))))
+  (let* ((file (button-label button)) (short-file (file-name-nondirectory file))
+         (partially-staged (and (git--status-index (list file) t)
+                                (git--status-index (list file) '(t "HEAD")))))
+    (when (y-or-n-p
+           (format (if (not partially-staged) "Add %s to index? "
+                     "Add all of %s (PARTIALLY STAGED) to index? ") short-file))
+      (git--add (list file))
+      (git--update-all-state-marks (list file))
+      (message "Added %s to index" (git--bold-face short-file))
+      ;; Also make sure it's in this commit. Huh, this is getting complex.
+      (unless (or git--commit-index-plus-targets
+                  (member git--commit-targets '(t nil))
+                  (member file git--commit-targets))
+        (add-to-list 'git--commit-targets file t #'string=))
+      (git-commit-refresh-status))))
 
 (defun git--commit-add-interactively ()
   (interactive)                         ; hehe
@@ -1795,6 +1853,7 @@ button, or at the end of the file if it didn't create any."
           (git--commit-buttonize-filenames t 'git--commit-diff-committed-link))
         (git--commit-buttonize-filenames nil
                                          'git--commit-diff-uncomitted-link)
+        (git--commit-buttonize-untracked)
         (add-text-properties (cdr git--commit-message-area) (point-max)
                              '(read-only t))
         ;; Remove git's usage tips. We need the space, and they're on cmd line.

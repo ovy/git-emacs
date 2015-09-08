@@ -41,6 +41,7 @@
 
 (define-key git-global-map "g" 'git-grep)
 (define-key git-global-map "h" 'git-stash)
+(define-key git-global-map "r" 'git-rename)
 (define-key git-global-map "i" 'git-add-interactively)
 
 (define-key git-global-map "l" 'git-log)
@@ -87,6 +88,7 @@
     ["Merge (start or continue)..." git-merge-next-action t]
     ["Reset to..." git-reset t]
     ["Stash..." git-stash t]
+    ["Rename file..." git-rename t]
     "---"
     ["Pull from Remote..." git-pull t]
     ["Push to Remote..." git-push t]

@@ -2958,7 +2958,7 @@ that variable in .emacs.
    )))
 
 ;;-----------------------------------------------------------------------------
-;;grep
+;; grep
 ;;-----------------------------------------------------------------------------
 
 (defvar git--grep-history nil "History for git-grep")
@@ -3060,6 +3060,10 @@ usual pre / post work: ask for save, ask for refresh."
   (git-after-working-dir-change))
 
 
+;; -----------------------------------------------------------------------------
+;; Push and pull.
+;; -----------------------------------------------------------------------------
+
 (defvar git-push-history '("--dry-run")
   "History variable for `git-push'. Okay to customize with your favorites.")
 
@@ -3097,6 +3101,25 @@ Since this command can be impactful, always prompts."
    (lexical-let ((run-command (concat "pull " command)))
      #'(lambda() (git-run-command run-command nil ;; don't wait
                                   'git-after-working-dir-change "HEAD")))))
-                     
+
+
+;; -----------------------------------------------------------------------------
+;; Rename
+;; -----------------------------------------------------------------------------
+
+(defun git-rename(&optional new-file)
+  "Renames the current file to NEW-FILE (prompted for), making sure git and
+Emacs know about it."
+  (interactive)
+  (git--require-buffer-in-git)          ; Git mv does anyway
+  (unless new-file
+    (setq new-file
+          (read-file-name (format "Rename %s to: "
+                                  (file-relative-name buffer-file-name))
+                          nil nil nil (file-relative-name buffer-file-name))))
+  (git--exec-string "mv" "--" buffer-file-name (expand-file-name new-file))
+  (set-visited-file-name new-file nil t)
+  (vc-find-file-hook))
+  
   
 (provide 'git-emacs)

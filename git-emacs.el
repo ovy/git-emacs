@@ -1652,6 +1652,7 @@ not nil in other cases (reserved)."
   (git--commit-button-make-keymap "File vs commit"
     "i" '("Stage interactively" . git--commit-add-interactively)
     "v" '("Visit file" . git--commit-visit-file)
+    "x" '("Unstage file" . git--commit-unstage)
     "a" '("Add to index" . git--commit-add-to-index)
     " " '("Toggle in/out of commit" . git--commit-button-toggle)
     (kbd "RET") '("View changes" . git--commit-diff-file))
@@ -1764,8 +1765,24 @@ be called above the corresponding section ONLY."
     (let ((key (x-popup-menu menu-pos keymap))) ;; f-in' call the function!
       (setq unread-command-events (append key unread-command-events)))))
 
+(defun git--commit-ensure-not-forced (file)
+  "If `git--commit-targets' force FILE to be committed
+completely, remove it from there. Return nil if nothing done."
+  (when (or (eq t git--commit-targets) (member file git--commit-targets))
+    (when (eq t git--commit-targets) ;; Need to resolve it: modifs vs HEAD
+      (git--please-wait "Reading git status"
+        (setq git--commit-targets
+              (mapcar #'git--fileinfo->name
+                      (git--status-index nil nil t)))))
+    (git--delete-str file git--commit-targets)
+    (unless git--commit-targets
+      (setq git--commit-index-plus-targets nil)
+      (message "Commit filelist became empty; back to an index commit"))
+    t))
 
 (defun git--commit-button-toggle ()
+  "Toggles the current file out of the commit, usually by manipulating
+filelist. However, if this isn't possible, asks the user to approve a reset."
   (interactive)
   (let* ((button (or (button-at (point)) (user-error "No commit file here")))
          (type (button-type button)) (file (button-label button))
@@ -1773,26 +1790,11 @@ be called above the corresponding section ONLY."
          (commit-target (if git--commit-amend "HEAD^1" "HEAD")))
     (when (eq type 'git--commit-diff-committed-link)
       (cond
-       ((or (eq t git--commit-targets) (member file git--commit-targets))
-        ;; Take it out of forced filelist.
-        (when (eq t git--commit-targets) ;; Need to resolve it: modifs vs HEAD
-          (git--please-wait "Reading git status..."
-            (setq git--commit-targets
-                  (mapcar #'git--fileinfo->name
-                          (git--status-index nil nil t)))))
-        (git--delete-str file git--commit-targets)
-        (if (or git--commit-targets git--commit-index-plus-targets)
-            (message "Removed %s from commit filelist"
-                     (git--bold-face short-file))
-          (setq git--commit-index-plus-targets nil)
-          (message "Commit filelist became empty; back to an index commit")))
-      ((git--status-index (list file) (list t commit-target))
-          ;; This requires a reset NOW (i.e. possible dataloss)
-        (when (y-or-n-p (format "Reset %s%s out of commit? " short-file
-                                (if (git--status-index (list file) t)
-                                    " (PARTIALLY STAGED)" "")))
-          (git--reset commit-target "--" file)
-          (git--update-all-state-marks (list file))))))
+       ((git--commit-ensure-not-forced file)
+        (when git--commit-targets (message "Removed %s from commit filelist"
+                                           (git--bold-face short-file))))
+       ((git--status-index (list file) (list t commit-target))
+        (git--commit-unstage button))))
 
     (when (eq type 'git--commit-diff-uncomitted-link)
       ;; Don't know how they could get here from a commit --dry-run -a.
@@ -1804,19 +1806,29 @@ be called above the corresponding section ONLY."
       (message "Added %s to commit filelist" (git--bold-face short-file))))
   (git-commit-refresh-status))
 
+
 (defun git--commit-visit-file (&optional button)
+  "Visits the file named by BUTTON (defaults to the one cursor is on)."
   (interactive)
   (find-file-other-window (button-label (or button (button-at (point))))))
 
+
+(defun git--commit-file-partially-staged (file)
+  "Returns true if FILE is partially staged (HEAD < index < working)
+and we should be extra careful not to overwrite its state."
+  (let ((diff-vs-index (git--status-index (list file) t))
+        (diff-index-vs-head (git--status-index (list file) '(t "HEAD"))))
+    (and diff-vs-index diff-index-vs-head)))
+
 (defun git--commit-add-to-index (&optional button)
-  (interactive (list
-                (or (button-at (point)) (user-error "No commit file here"))))
+  "Adds the file named by BUTTON (defaults to button under point) to the git
+index and ensures it's part of the commit."
+  (interactive (list (or (button-at (point)) (user-error "No file here"))))
   (let* ((file (button-label button)) (short-file (file-name-nondirectory file))
-         (partially-staged (and (git--status-index (list file) t)
-                                (git--status-index (list file) '(t "HEAD")))))
-    (when (y-or-n-p
-           (format (if (not partially-staged) "Add %s to index? "
-                     "Add all of %s (PARTIALLY STAGED) to index? ") short-file))
+         (partially (git--commit-file-partially-staged file)))
+    (when (y-or-n-p (format (if (not partially) "Add %s to index? "
+                              "Add all of %s (PARTIALLY STAGED) to index? ")
+                            short-file))
       (git--add (list file))
       (git--update-all-state-marks (list file))
       (message "Added %s to index" (git--bold-face short-file))
@@ -1831,6 +1843,24 @@ be called above the corresponding section ONLY."
   (interactive)                         ; hehe
   (find-file-other-window (button-label (button-at (point))))
   (git-add-interactively))               ; maybe could come back here.
+
+
+(defun git--commit-unstage (&optional button)
+  "Unstages the file named by BUTTON (defaults to button under point) from
+the git index and ensures it's not forced into the commit by filelist. Usually
+the file is reset to HEAD but on an amend it's HEAD^1."
+  (interactive (list (or (button-at (point)) (user-error "No file here"))))
+  (let* ((file (button-label button)) (short-file (file-name-nondirectory file))
+         (partially (git--commit-file-partially-staged file))
+         (commit-target (if git--commit-amend "HEAD^1" "HEAD")))
+    (when (y-or-n-p (format "Unstage %s%s out of this commit? "
+                            short-file (if partially " (PARTIALLY STAGED)" "")))
+      (git--reset commit-target "--" file)
+      (git--update-all-state-marks (list file))
+      (message "Unstaged %s" file)      ; Let user see potential msg below
+      (git--commit-ensure-not-forced file))
+    (git-commit-refresh-status)))
+
 
 (defun git-commit-refresh-status ()
   "Sets or refreshes the status section in a commit. Returns t if there is

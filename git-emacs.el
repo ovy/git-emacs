@@ -764,8 +764,8 @@ will be relative to default-directory."
 
 
 (defun git--symbolic-ref (arg)
-  "Execute 'git symbolic-ref ARG' and return the sha1 string, or nil if the
-arg is not a symbolic ref."
+  "Execute 'git symbolic-ref ARG' and return the resulting string (e.g.
+refs/heads/BRANCH), or nil if the arg is not a valid symbolic ref."
   (let ((commit (git--exec-string-no-error "symbolic-ref" "-q" arg)))
     (when  (> (length commit) 0)
       (car (split-string commit"\n")))))
@@ -2794,85 +2794,65 @@ in index, using ediff"
   "Association list of (REPOSITORY-DIR . BASELINE-COMMIT). Both
 REPOSITORY-DIR and BASELINE-COMMIT are strings. The BASELINE-COMMIT determines
 what to diff against, in this repository, when git-diff-baseline is used; it
-is either a string or a function, see also `git-baseline-candidates'.")
-;; (makunbound 'git-baseline-commit)  ;;eval to clear variable
+is either a string or a function. This is semi-deprecated in favor of git's
+native notion of upstream; see 'git branch --set-upstream-to' and
+`git-baseline'. The one thing it lets you do that git doesn't is to use
+a tag as \"upstream\". REPOSITORY-DIR can be t to match as a default; you
+probably want a function value in this case.")
 
-(defvar git-baseline-candidates '("git-svn" "origin")
-  "List of strings and functions that might be good choices for baseline commits
-in git (i.e., the state of an upstream repository). A string item is interpreted
-as a git symbolic ref, and it will be used if it exists in the current
-repository. A function item will be called with default-directory set to the
-root repository, and if it completes successfully and returns non-nil its
-string result will be used as the baseline. Normally, the first string or
-function that matches will be used, but you can select a baseline manually
-by calling `git-baseline' interactively.")
+(defun git--branch-default-push-pull (&optional branch)
+  "Get tracking information for the current branch, a three-element list
+(BRANCH PUSH-DEFAULT PULL-DEFAULT). The latter two elements can be nil,
+depending on git configuration; note that git can be configured to always have
+a push branch even if never used. Errors out if not on a branch."
+  (let ((ref-head (git--symbolic-ref (or branch "HEAD"))))
+    (unless ref-head (user-error "No git branch in %s" default-directory))
+    (let ((parts (split-string (git--exec-string
+               "for-each-ref"
+               "--format=%(refname:short)\t%(upstream:short)\t%(push:short)"
+               "--" ref-head) "\t" nil "[ \n]")))
+      (mapcar #'(lambda(s) (if (string= s "") nil s)) parts))))
 
 
-;; TODO: ovy: investigate using git's notion of upstream here.
 (defun git-baseline (&optional always-prompt-user)
-  "Select the baseline commit used in `git-diff-baseline' and friends, for the
-current repository. Tries to find the repo in `git-baseline-alist'; if not
-found, tries all of `git-baseline-candidates'. If the above attempts fail, or
-ALWAYS-PROMPT-USER is specified, or it was called interactively, prompts the
-user for a baseline commit, saves it to `git-baseline-alist' and offers to save
-that variable in .emacs.
-  Returns either a string (git symbolic ref) or a function that returns one."
+  "Return the baseline revision used in `git-diff-baseline' and
+friends, for the current repository. This is usually git's
+'upstream' branch; if not configured, or ALWAYS-PROMPT-USER, prompt
+to set one. For backward compatibility and unusual cases, also looks
+up the repository in `git-baseline-alist'."
   (interactive '(t))
-  ;; This function is a bit too long. Consider extracting parts that may
-  ;; be useful elsewhere.
-  (let* ((repo-dir
-          ;; either the repo of the current buffer
-          (git--get-top-dir-or-prompt "Set baseline for repository: "))
-         ;; canonicalize, for storage / lookup
-         (canonical-repo-dir
-          (expand-file-name (file-name-as-directory repo-dir)))
-         (previous-baseline-assoc
-          (assoc canonical-repo-dir git-baseline-alist)))
-    ;; found among previous associations?
-    (if (and (not always-prompt-user) previous-baseline-assoc)
-        (if (functionp (cdr previous-baseline-assoc))
-            (funcall (cdr previous-baseline-assoc))
-          (cdr previous-baseline-assoc))
-      ;; prompt for new one, possibly a function
-      (let ((default-directory canonical-repo-dir)
-            candidate-strings candidate-function-alist)
-        (catch 'found-one
-          (dolist (candidate git-baseline-candidates)
-            (cond ((stringp candidate)
-                   (when (ignore-errors (git--rev-parse candidate))
-                     (if (not always-prompt-user)
-                         (throw 'found-one candidate)
-                       (add-to-list 'candidate-strings candidate t))))
-                  ((functionp candidate)
-                   (let ((result (ignore-errors (funcall candidate))))
-                     (when result
-                       (if (not always-prompt-user)
-                           (throw 'found-one result)
-                         (let ((readable-form (format "(%S)" candidate)))
-                           (add-to-list 'candidate-strings readable-form t)
-                           (add-to-list 'candidate-function-alist
-                                        (cons readable-form candidate)))))))
-                  (t (error "Invalid git-baseline-candidate: %S" candidate))))
-          ;; Maybe prompt user
-          (let* ((new-baseline-str
-                  ;; Show the viable candidates first, but allow arbitrary revs
-                  (git--select-revision "Select baseline commit: "
-                                        candidate-strings candidate-strings))
-                 (new-baseline (or (cdr-safe
-                                    (assoc new-baseline-str
-                                           candidate-function-alist))
-                               new-baseline-str)))
-            ;; store in variable
-            (if previous-baseline-assoc
-                (setcdr previous-baseline-assoc new-baseline)
-              (add-to-list 'git-baseline-alist
-                           (cons canonical-repo-dir new-baseline))
-              ;; ... which we possibly save in .emacs
-              (when (y-or-n-p "Save for future sessions? ")
-                (customize-save-variable 'git-baseline-alist
-                                         git-baseline-alist)))
-            (if (functionp new-baseline) (funcall new-baseline)
-              new-baseline)))))))
+  (let ((current-baseline nil) baseline-assoc)
+    (when git-baseline-alist            ;compat
+      (let* ((dir (git--get-top-dir))
+             ;; canonicalize, for storage / lookup
+             (canonical-dir (expand-file-name (file-name-as-directory dir))))
+        (setq baseline-assoc (or (assoc canonical-dir git-baseline-alist)
+                                 (assoc t git-baseline-alist)))
+        (setq current-baseline (if (functionp (cdr baseline-assoc))
+                                   (funcall (cdr baseline-assoc))
+                                 (cdr baseline-assoc)))))
+    (when (or (null current-baseline) always-prompt-user)
+      (let* ((branch-and-defaults (git--branch-default-push-pull))
+             (short-branch (nth 0 branch-and-defaults)))
+        (setq current-baseline (nth 1 branch-and-defaults)) ;; possibly nil
+        (when (or (null current-baseline) always-prompt-user)
+          (setq current-baseline
+           (funcall git--completing-read
+            (format (if current-baseline "Set upstream for branch %s to: "
+                      "No upstream configured for branch %s. Set one now: ")
+                    (git--bold-face short-branch))
+            (git--symbolic-commits '("remotes" "heads")) nil 'need-choice
+            current-baseline))
+          (message "%s%s" (git--trim-string
+                           (git--exec-string "branch" "--set-upstream-to"
+                                             current-baseline short-branch))
+                   (if (null baseline-assoc) ""
+                     ;; We are interactive if we got here.
+                     (format (concat "\nNote: your entry in git-baseline-alist,"
+                                     " %S, takes precedence over git's upstream"
+                                     " for git-emacs diffs. Consider removing "
+                                     "it manually.") baseline-assoc))))))
+    current-baseline))
 
 (defun git-diff-baseline()
   "Diff current buffer against a selectable \"baseline\" commit"
@@ -3074,9 +3054,15 @@ default, then run \"git push args\" in a `git-run-command'
 buffer. Since this command can be impactful, always prompts."
   (interactive)
   (setq command
-        (read-string (format "[on %s] git push >> " (git--current-branch t))
-                     (or command (car-safe git-push-history))
-                     (if command 'git-push-history '(git-push-history . 1))))
+        (read-string
+         (format "[%s] git push >> "
+                 (let ((branch-deflts
+                        (ignore-errors (git--branch-default-push-pull))))
+                   (if (not branch-deflts) "no branch"
+                     (format "%s -> %s" (nth 0 branch-deflts)
+                             (or (nth 2 branch-deflts) "<no default>")))))
+         (or command (car-safe git-push-history))
+         (if command 'git-push-history '(git-push-history . 1))))
   (when (string= command "") (push "" git-push-history)) ;; !done by default
   ;; Don't ask for save/commit here, we're not switching trees. It's quite
   ;; legitimate and harmless to push with pending changes.
@@ -3092,8 +3078,16 @@ default, then run \"git pull args\" in a `git-run-command' buffer.
 Since this command can be impactful, always prompts."
   (interactive)
   (setq command
-        (read-string "git pull >> " (or command (car-safe git-pull-history))
-                     (if command 'git-pull-history '(git-pull-history . 1))))
+        (read-string
+         (format "[%s] git pull >> "
+                 (let ((branch-deflts
+                        (ignore-errors (git--branch-default-push-pull))))
+                   (if (not branch-deflts) "no branch"
+                     (format "%s -> %s" (or (nth 1 branch-deflts)
+                                            "<no default>")
+                             (nth 0 branch-deflts)))))
+         (or command (car-safe git-pull-history))
+         (if command 'git-pull-history '(git-pull-history . 1))))
   (when (string= command "") (push "" git-pull-history)) ;; !done by default
   ;; Here we do need to ask for save & commit/stash. Git itself recommends
   ;; against pulling with a dirty tree.

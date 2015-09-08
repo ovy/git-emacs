@@ -26,7 +26,7 @@ test: *.el
 # 	get "end of file during parsing" if the first sexpr has quotes. Ugh.
 	$(EMACS_BATCH) --eval "(point) (require 'git-emacs-autoloads)" \
 	  --visit "Makefile" \
-	  --eval "(point) (unless (functionp 'git-diff-baseline) (error \"autoload malfunctioned\"))"
+	  --eval "(point) (unless (functionp 'git-diff-upstream) (error \"autoload malfunctioned\"))"
 
 clean:
 	rm -f *.elc

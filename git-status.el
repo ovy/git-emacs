@@ -493,12 +493,12 @@ are very deep (used when repositioning mark on refresh)."
      ;; We want the short keys to appear here rather than the global keys
       ["HEAD" git-diff-head :keys "d RET" :active t]
       ["Index" git-diff-index :keys "d i" :active t]
-      ["Baseline" git-diff-baseline :keys "d b" :active t]
+      ["Upstream" git-diff-upstream :keys "d u" :active t]
       ["Other..." git-diff-other :keys "d o" :active t])
     ("Diff Repository against"
      ["HEAD" git-diff-all-head :keys "D RET" :active t]
      ["Index" git-diff-all-index :keys "D i" :active t]
-     ["Baseline" git-diff-all-baseline :keys "D b" :active t]
+     ["Upstream" git-diff-all-upstream :keys "D u" :active t]
      ["Other..." git-diff-all-other :keys "D o" :active t])
     ["Delete File" git--status-view-rm]
     ["View Summary" git--status-view-summary t]

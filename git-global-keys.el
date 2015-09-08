@@ -27,7 +27,7 @@
 (define-key git-global-map "d" 'git--diff-buffer-map)
 (define-key git--diff-buffer-map "o" '("[o]ther" . git-diff-other))
 (define-key git--diff-buffer-map "i" '("[i]ndex" . git-diff-index))
-(define-key git--diff-buffer-map "b" '("[b]aseline" . git-diff-baseline))
+(define-key git--diff-buffer-map "u" '("[u]pstream" . git-diff-upstream))
 (define-key git--diff-buffer-map "h" '("[H]ead" . git-diff-head))
 (define-key git--diff-buffer-map (kbd "RET") 'git-diff-head)
 
@@ -35,7 +35,7 @@
 (define-key git-global-map "D" 'git--diff-all-map)
 (define-key git--diff-all-map "o" '("[o]ther" . git-diff-all-other))
 (define-key git--diff-all-map "i" '("[i]ndex" . git-diff-all-index))
-(define-key git--diff-all-map "b" '("[b]aseline" . git-diff-all-baseline))
+(define-key git--diff-all-map "u" '("[u]pstream" . git-diff-all-upstream))
 (define-key git--diff-all-map "h" '("[H]ead" . git-diff-all-head))
 (define-key git--diff-all-map (kbd "RET") 'git-diff-all-head)
 
@@ -71,13 +71,13 @@
     ("Diff Current Buffer against"
       ["HEAD" git-diff-head t]
       ["Index" git-diff-index t]
-      ["Baseline" git-diff-baseline t]
+      ["Upstream" git-diff-upstream t]
       ["Other..." git-diff-other t]
       )
     ("Diff Repository against"
      ["HEAD" git-diff-all-head t]
      ["Index" git-diff-all-index t]
-     ["Baseline" git-diff-all-baseline t]
+     ["Upstream" git-diff-all-upstream t]
      ["Other..." git-diff-all-other t])
     "---"
     ["Log for Entire Project" git-log t]

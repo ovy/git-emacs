@@ -2791,14 +2791,15 @@ in index, using ediff"
 
 ;; baseline stuff
 (defvar git-baseline-alist '()
-  "Association list of (REPOSITORY-DIR . BASELINE-COMMIT). Both
-REPOSITORY-DIR and BASELINE-COMMIT are strings. The BASELINE-COMMIT determines
-what to diff against, in this repository, when git-diff-baseline is used; it
+  "Association list of (REPOSITORY-DIR . BASELINE-REF). Both
+REPOSITORY-DIR and BASELINE-REF are strings. The BASELINE-REF determines
+what to diff against, in this repository, when git-diff-upstream is used; it
 is either a string or a function. This is semi-deprecated in favor of git's
 native notion of upstream; see 'git branch --set-upstream-to' and
-`git-baseline'. The one thing it lets you do that git doesn't is to use
+`git-upstream'. The one thing it lets you do that git doesn't is to use
 a tag as \"upstream\". REPOSITORY-DIR can be t to match as a default; you
-probably want a function value in this case.")
+probably want a function value in this case, e.g. to return 'git-svn' when
+it exists.")
 
 (defun git--branch-default-push-pull (&optional branch)
   "Get tracking information for the current branch, a three-element list
@@ -2814,12 +2815,12 @@ a push branch even if never used. Errors out if not on a branch."
       (mapcar #'(lambda(s) (if (string= s "") nil s)) parts))))
 
 
-(defun git-baseline (&optional always-prompt-user)
-  "Return the baseline revision used in `git-diff-baseline' and
+(defun git-upstream (&optional always-prompt-user)
+  "Return the upstream revision used in `git-diff-upstream' and
 friends, for the current repository. This is usually git's
-'upstream' branch; if not configured, or ALWAYS-PROMPT-USER, prompt
-to set one. For backward compatibility and unusual cases, also looks
-up the repository in `git-baseline-alist'."
+'upstream' branch; if not configured, or ALWAYS-PROMPT-USER (interactive),
+prompt to set one for the current branch. For backward compatibility
+and unusual cases, also look up the repository in `git-baseline-alist'."
   (interactive '(t))
   (let ((current-baseline nil) baseline-assoc)
     (when git-baseline-alist            ;compat
@@ -2854,14 +2855,15 @@ up the repository in `git-baseline-alist'."
                                      "it manually.") baseline-assoc))))))
     current-baseline))
 
-(defun git-diff-baseline()
+(defun git-diff-upstream()
   "Diff current buffer against a selectable \"baseline\" commit"
   (interactive)
   (git--require-buffer-in-git)
   (git--diff (git--if-in-status-mode
               (git--status-view-select-filename)
               buffer-file-name)
-             (concat (git--maybe-ask-for-fetch (git-baseline)) ":")))
+             (concat (git--maybe-ask-for-fetch (git-upstream)) ":")))
+(defalias 'git-diff-baseline 'git-diff-upstream)
 
 (defun git-diff-other(commit)
   "Diff current buffer against an arbitrary commit"
@@ -2886,10 +2888,11 @@ up the repository in `git-baseline-alist'."
   (interactive)
   (git--diff-many files))
 
-(defun git-diff-all-baseline (&optional files)
+(defun git-diff-all-upstream (&optional files)
   "Diff all of the repository, or just FILES, against the \"baseline\" commit."
   (interactive)
-  (git--diff-many files (git--maybe-ask-for-fetch (git-baseline))))
+  (git--diff-many files (git--maybe-ask-for-fetch (git-upstream))))
+(defalias 'git-diff-all-baseline 'git-diff-all-upstream)
 
 (defun git-diff-all-other (commit &optional files)
   (interactive

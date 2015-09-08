@@ -114,8 +114,10 @@
   (let ((git-baseline-alist `((,default-directory ."origin/yada-yada")))
         (git--completing-read #'(lambda(&rest args)
                                  (error "No prompting! Args were: %s" args))))
-    (assert (equal "origin/yada-yada" (git-baseline)))
+    (assert (equal "origin/yada-yada" (git-upstream)))
     (setq git-baseline-alist nil)       ;; usual case now
+    ;; Test default-push-pull, but don't assert anything on push, which can
+    ;; be globally configured to always exist, or whatever.
     (assert (equal '("master" nil) (butlast (git--branch-default-push-pull) 1)))
     ;; Create a branch we pretend is remote.
     (git--branch "pseudo-remote/foobar" "at-first-commit")
@@ -125,9 +127,11 @@
                (assert (null initial))
                "pseudo-remote/foobar")))
       (assert (equal "pseudo-remote/foobar"
-                     (call-interactively 'git-baseline))))
-    ;; if we call again (non-interacctively), no more prompting.
-    (assert (equal "pseudo-remote/foobar" (git-baseline))))
+                     (call-interactively 'git-upstream))))
+    ;; if we call again (non-interactively), no more prompting.
+    (assert (equal "pseudo-remote/foobar" (git-upstream)))
+    (assert (equal '("master" "pseudo-remote/foobar")
+                   (butlast (git--branch-default-push-pull) 1))))
   (git-delete-branch "pseudo-remote/foobar")
 
   ;; Try a new branch.

@@ -10,7 +10,6 @@ all: compile tags test
 
 compile: *.el
 	@echo; echo ">>> Compiling"
-	@echo ">>> [Ignore warnings about flet being obsolete until we get a good replacement]"
 	rm -f *.elc
 	$(EMACS_BATCH) -f batch-byte-compile *.el
 
@@ -20,6 +19,7 @@ tags: *.el
 
 test: *.el
 	@echo; echo ">>> Running tests"
+	@echo "[Ignore warnings about flet being obsolete until we get a decent replacement. Really. Just ignore them. Maybe silent disapproval will get the point through]"
 	$(EMACS_BATCH) -l git--test.el -f git-regression
 	@echo; echo "Testing autoloads..."
 # 	Don't ask about the (point). It's a weirdness with EmacsMac --eval, I

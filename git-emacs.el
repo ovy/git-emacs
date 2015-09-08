@@ -484,12 +484,12 @@ visiting files that no longer exist."
     (unwind-protect
         (let ((buffers-not-reverted (copy-sequence buffers-that-exist))
               buffers-that-exist-unsaved buffers-that-exist-saved)
-          (flet ((buffer-refresh-func (buffer)
-                  (with-current-buffer buffer (revert-buffer t t))
-                  ;; A hash table is probably not worth it here.
-                  (setq buffers-not-reverted
-                        (delq buffer buffers-not-reverted))
-                  (incf num-buffers-refreshed)))
+          (cl-flet ((buffer-refresh-func (buffer)
+                      (with-current-buffer buffer (revert-buffer t t))
+                      ;; A hash table is probably not worth it here.
+                      (setq buffers-not-reverted
+                            (delq buffer buffers-not-reverted))
+                      (incf num-buffers-refreshed)))
             ;; Filter buffers by their saved status.
             (dolist (buffer buffers-that-exist)
               (if (buffer-modified-p buffer)
@@ -1455,7 +1455,7 @@ and the user accepts the result."
          (ediff-combination-pattern '("<<<<<<< Local" A "=======" B
                                       ">>>>>>> Remote")))
     ;; Set the major mode of all the buffers based on the current buffer
-    (let ((default-major-mode nil))
+    (letf (((default-value 'major-mode) nil))
       (mapc #'set-buffer-major-mode
             (delq nil (list our-buffer their-buffer base-buffer))))
 
@@ -2634,7 +2634,7 @@ position."
            (when (> (hash-table-count branch-annotations) 0)
              (min (/ (window-width) 2)
                   (+ goal-column 3
-                     (reduce #'max (mapcar #'length branch-list)))))))
+                       (reduce #'max (mapcar #'length branch-list)))))))
       (dolist (branch branch-list)
         (let ((annotations (gethash branch branch-annotations))
               (branch-is-current (string= current-branch branch)))
@@ -2652,7 +2652,8 @@ position."
           (insert "\n"))))
 
     ;; reposition
-    (ignore-errors (goto-line line-number-after))
+    (goto-char (point-min))
+    (forward-line (1- line-number-after))
     (when (> (line-number-at-pos) (length branch-list)) (forward-line -1))
     (move-to-column goal-column)
     (when (fboundp 'hl-line-highlight) (hl-line-highlight))

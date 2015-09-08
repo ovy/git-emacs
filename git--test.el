@@ -284,4 +284,10 @@
   (git--test-branch-mode)
 
   (message "git-regression passed"))
-  
+
+;; flet warnings: cl-letf is an awful replacement for flet. Give me a nice
+;; one (noflet?) or f-off, Emacs.
+
+;; Local Variables:
+;; byte-compile-warnings: (not obsolete)
+;; End:

@@ -1726,9 +1726,10 @@ be called above the corresponding section ONLY."
     ; Compute rev1, rev2 inputs to diff--many
     (let ((diff-from (if git--commit-amend "HEAD^1" "HEAD"))
           (diff-to nil) (file (button-label button)))
-      ;; the commit-index case is the complicated one, adjust.
-      (unless (or (eq t git--commit-targets)
-                  (member file git--commit-targets))
+      ;; The commit-index case is the complicated one, adjust.
+      (when (or (eq nil git--commit-targets)
+                (and git--commit-index-plus-targets
+                     (not (member file git--commit-targets)))) ;; not forced
           (if (eq (button-type button) 'git--commit-diff-committed-link)
               (setq diff-to t)          ; diff HEAD -> index
             (setq diff-from nil))       ; diff index -> working

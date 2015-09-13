@@ -107,7 +107,15 @@
                                                    (git--last-log-message))))
           (assert (not (equal second-commit-id (git--rev-parse "HEAD"))))
           ;; Should still be one commit above the first
-          (assert (equal first-commit-id (git--rev-parse "HEAD^1"))))
+          (assert (equal first-commit-id (git--rev-parse "HEAD^1")))
+          ;; Abort a commit, saving message.
+          (git-commit t)
+          (goto-char (car git--commit-message-area))
+          (insert "   \nabortive commit\n\nnay\n")
+          (delete-region (point) (cdr git--commit-message-area))
+          (git--quit-buffer)
+          (assert (equal "abortive commit\n\nnay" (current-kill 0)))
+          )
       (ignore-errors (kill-buffer git--commit-log-buffer))))
 
   ;; Some upstream/baseline testing. Only minimal testing of -alist now.

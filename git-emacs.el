@@ -1323,7 +1323,6 @@ and `git--commit-targets', as opposed to their intersection (see commit -i)")
   "Called when the user commits, in the commit buffer (C-cC-c).
 Trim the buffer log, commit runs any after-commit functions."
   (interactive)
-
   ;; check buffer
   (unless git--commit-message-area (error "Not in a git-commit buffer"))
 
@@ -1335,6 +1334,8 @@ Trim the buffer log, commit runs any after-commit functions."
   ;; update state marks, either for the files committed or the whole repo
   (git--update-all-state-marks
    (if (eq t git--commit-targets) nil git--commit-targets))
+  ;; Message doesn't need to be saved anymore.
+  (remove-hook 'kill-buffer-hook 'git--commit-maybe-save-message t)
 
   ;; close window and kill buffer. Some gymnastics are needed to preserve
   ;; the buffer-local value of the after-hook.
@@ -1921,7 +1922,18 @@ when done. Returns the button in former case, nil in the latter."
               (ignore-errors (forward-button -1 t nil))
             (when (bolp) (backward-char 1))
             nil)))))
-         
+
+(defun git--commit-maybe-save-message ()
+  "Saves the commit message when it's about to be destroyed and prints a
+message to this effect. Right now, the kill buffer is a convenient place."
+  (when git--commit-message-area
+    (let ((text (git--trim-string
+                 (buffer-substring (car git--commit-message-area)
+                                   (cdr git--commit-message-area)))))
+      (unless (string= text "")
+        (kill-new text)
+        (message "Commit message saved to kill ring (%s to recover)"
+                 (substitute-command-keys "\\[yank]"))))))
 
 (defvar git-commit-buffer-map
   (let ((map (make-sparse-keymap)))
@@ -1954,6 +1966,7 @@ Returns the buffer."
         (buffer (get-buffer-create git--commit-log-buffer))
         (current-dir default-directory))
     (with-current-buffer buffer
+      (git--commit-maybe-save-message)
       ;; Tell git--commit-buffer what to do (refresh does actual args)
       (setq git--commit-targets targets git--commit-amend amend
             git--commit-index-plus-targets nil)
@@ -2000,6 +2013,7 @@ Returns the buffer."
                     (ignore-errors
                       (kill-buffer git--commit-last-diff-file-buffer)))
                 t t)                    ; append, local
+      (add-hook 'kill-buffer-hook 'git--commit-maybe-save-message t t)
 
       ;; Set cursor to message area
       (goto-char cur-pos)

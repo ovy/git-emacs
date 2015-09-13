@@ -265,6 +265,16 @@ if it fails. If the command succeeds, returns the git output."
                   (apply #'git--exec-buffer cmd args))
         (error "%s" (git--trim-string (buffer-string)))))))
 
+(defvar git--mergelike-refs '(("merge" . "MERGE_HEAD")
+                              ("cherry-pick" . "CHERRY_PICK_HEAD"))
+  "Refs to look for during a merge-like operation. Format is (op . HEAD)")
+
+(defun git--find-mergelike ()
+  "Returns one of the entries in `git--mergelike-refs' if it looks like
+the operation is in progress"
+  (loop with default-directory = (git--get-top-dir)
+        for op in git--mergelike-refs
+        when (file-readable-p (expand-file-name (cdr op) ".git/")) thereis op))
 
 ;; Originally this addressed another issue but a lot has changed since 1.7.
 ;; Now we have another corner case to worry about :)
@@ -277,9 +287,7 @@ If OUTBUF is not nil, puts the standard output there. Returns the
 git return code."
   (let ((rc (apply #'git--exec "commit" (list outbuf nil) nil
                    "--dry-run" args)))
-    (if (and (eq rc 1)
-             (file-exists-p (expand-file-name ".git/MERGE_HEAD"
-                                              (git--get-top-dir))))
+    (if (and (eq rc 1) (git--find-mergelike))
         0             ; There ARE changes to commit.
       rc)))
 
@@ -1516,15 +1524,17 @@ none ask the user whether to accept the merge results"
       )))
 
 (defun git-merge-abort ()
-  "Aborts a merge in progress. Returns t if merge aborted."
+  "Aborts a merge or cherry-pick in progress. Returns t if merge aborted."
   (interactive)
-  (let ((merging-with (ignore-errors    ; which it throws
-                        (git--describe "MERGE_HEAD" "--always" "--abbrev"
-                                       "--tags" "--exact-match"))))
+  (let* ((merge-op (git--find-mergelike))
+         (op (car merge-op))
+         (merging-with (when merge-op
+                         (git--describe "--all" "--contains" "--always"
+                                        "--abbrev" (cdr merge-op)))))
     (unless merging-with (user-error "No merge appears to be in progress"))
-    (when (y-or-n-p (format "Undo current merge with %s? " merging-with))
-      (git--merge "--abort")
-      (message "Merge successfully undone")
+    (when (y-or-n-p (format "Undo current %s of %s? " op merging-with))
+      (message "%s" (git--trim-string (git--exec-string op "--abort")))
+      (message "%s successfully undone" (capitalize op))
       (sit-for 1)
       (git-after-working-dir-change)
       t)))
@@ -1587,7 +1597,7 @@ not nil in other cases (reserved)."
         (quit (if (git-merge-abort) nil t))))
       ;; else branch, no unmerged files remaining
       ;; Perhaps we should commit (staged files only!)
-     ((file-exists-p ".git/MERGE_HEAD")
+     ((git--find-mergelike)
       (git-commit nil nil "Merge finished. "))    ; And we're done!
       ;; No sign of a merge. Ask for another?
       ((not initiate-or-undo) nil)

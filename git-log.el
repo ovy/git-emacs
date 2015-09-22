@@ -465,8 +465,11 @@ track everything known to reflog (i.e. recent repo changes)."
 (defun git--log-reflog-setup ()
   (set (make-local-variable 'git-log-reflog-lines) git-log-reflog-lines-setup)
   (set (make-local-variable 'git-log-reflog-i) 0)
-  (local-set-key "\M-n" 'git-log-reflog-next)
-  (local-set-key "\M-p" 'git-log-reflog-prev)
+  (let ((map (make-sparse-keymap))) ;; because LOCAL-set-key isn't.
+    (define-key map "\M-n" 'git-log-reflog-next)
+    (define-key map "\M-p" 'git-log-reflog-prev)
+    (set-keymap-parent map git-log-view-mode-map)
+    (use-local-map map))
   (font-lock-add-keywords
    nil '(("^#[^\n]*" . font-lock-doc-face)
          ("^# Use " "\\[.+?\\]" nil nil (0 font-lock-constant-face t))

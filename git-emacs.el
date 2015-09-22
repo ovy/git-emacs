@@ -1079,11 +1079,15 @@ to users with stable interface."
                             'type 'git--log-link)
         (insert ")\n"))
       (insert "\n")
-      (local-set-key "q" 'git--quit-buffer)
+      (let ((map (make-sparse-keymap))) ;; because LOCAL-set-key isn't.
+        (define-key map "q" 'git--quit-buffer)
+        (define-key map "g" #'(lambda () (interactive) ; refresh
+                            (git-run-command git--run-command-cmd)))
+        (set-keymap-parent map comint-mode-map)
+        (use-local-map map))
+
       (setq-local git--run-command-cmd cmd)
       (setq-local git--run-command-when-done when-done)
-      (local-set-key "g" #'(lambda () (interactive) ; refresh
-                             (git-run-command git--run-command-cmd)))
       (setq-local scroll-up-aggressively 0.1) ;; output slow(ish) & important
       (let ((system-uses-terminfo (unless git-run-command-force-color
                                     system-uses-terminfo))

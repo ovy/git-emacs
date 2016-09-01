@@ -2321,6 +2321,26 @@ refreshes them and puts cursor on the new branch for further operations."
     (message "You can recover the deleted branch %s as %s"
              (git--bold-face branch) saved-head)))
 
+
+(defun git-rename-branch (&optional branch)
+  "Rename BRANCH, prompting for a new branch name. If BRANCH is
+unspecified (interactive), uses the current branch name if in
+`git-branch-mode', or prompts for one defaulting to current."
+  (interactive (list (git-branch-mode-selected t)))
+  (let ((branch-list (git--branch-list)))
+    (unless branch
+      (setq branch (git--select-from-user
+                    "Branch to rename: "
+                    (car branch-list) nil (cdr branch-list))))
+    (let ((new-name (completing-read (format "Rename branch %s to: "
+                                             (git--bold-face branch))
+                                     (car branch-list) nil nil branch)))
+    (git--branch "-m" branch new-name)
+    (when (eq major-mode 'git-branch-mode)
+      (git--branch-mode-refresh new-name)))))
+
+                                         
+
 (defun git-delete-tag (tag)
   "Delete TAG, prompt the user if unspecified."
   (interactive
@@ -2558,6 +2578,7 @@ been displayed.")
   (define-key map "\C-m"  'git--branch-mode-switch)
   (define-key map "c"     'git--branch-mode-create)
   (define-key map "b"     'git-new-branch)
+  (define-key map "r"     'git-rename-branch)
   (define-key map "d"     'git--branch-mode-delete)
   (define-key map (kbd "<delete>") 'git--branch-mode-delete)
   (define-key map "g"     'git--branch-mode-refresh)

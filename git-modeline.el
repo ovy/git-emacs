@@ -157,9 +157,10 @@ doing update--state-mark for each buffer."
       (let ((file-index (make-hash-table :test #'equal :size (length buffers)))
             (default-directory
               (git--get-top-dir
-                (if repo-or-filelist
-                    (file-name-directory (first repo-or-filelist))
-                  default-directory)))
+               (cond
+                ((stringp repo-or-filelist) repo-or-filelist)
+                ((null repo-or-filelist) default-directory)
+                (t (file-name-directory (first repo-or-filelist))))))
             (all-relative-names nil))
         (dolist (buffer buffers)
           (let ((relative-name
@@ -181,12 +182,41 @@ doing update--state-mark for each buffer."
             (dolist (fi (apply #'git--ls-files remaining-files))
               (setcdr (gethash (git--fileinfo->name fi) file-index)
                       (git--fileinfo->stat fi)))))
-        ;; Now set all stats
-        (maphash #'(lambda (filename buffer-stat)
-                     (when (cdr buffer-stat)
-                       (with-current-buffer (car buffer-stat)
-                         (git--update-state-mark (cdr buffer-stat)))))
-                 file-index)))))
+        ;; Now set all stats. Also handle vc-git here.
+        (let ((vc-rev nil) (vc-git-detached nil))
+          ;; Copy them to all other buffers below
+          (maphash #'(lambda (filename buffer-stat)
+                       (when (cdr buffer-stat)
+                         (with-current-buffer (car buffer-stat)
+                           (setq filename (buffer-file-name)) ;in case differs
+                           (when (null vc-rev)
+                             ;; Find out revision once and for all, then
+                             ;; copy to all the others
+                             (vc-file-setprop filename 'vc-working-revision nil)
+                             (setq vc-rev (vc-working-revision filename))
+                             (setq vc-git-detached
+                                   (vc-file-getprop filename 'vc-git-detached)))
+                           (vc-file-setprop filename
+                                            'vc-working-revision vc-rev)
+                           (vc-file-setprop filename
+                                            'vc-git-detached vc-git-detached)
+                           (vc-file-setprop filename 'vc-state
+                                            (git--stat-to-vc-state
+                                             (cdr buffer-stat)))
+                           (git--update-state-mark (cdr buffer-stat))
+                           (vc-mode-line filename))))
+                   file-index))))))
+
+(defun git--stat-to-vc-state (git-stat)
+  (case git-stat
+    ('modified 'edited)
+    ('unknown  'unregistered)
+    ('added    'added)
+    ('deleted  'removed)
+    ('unmerged 'needs-merge)
+    ('uptodate 'up-to-date)
+    ('staged   'edited)
+    (t 'unregistered)))
       
 ;; example on state-modeline-mark
 ;; 

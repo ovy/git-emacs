@@ -516,9 +516,7 @@ visiting files that no longer exist."
                     '("buffer" "buffers" "refresh")))
                   ('git-refresh-all-saved
                    (mapc #'buffer-refresh-func buffers-that-exist-saved)))
-              (when buffers-not-reverted
-                (git--update-all-state-marks (mapcar #'buffer-file-name
-                                                   buffers-not-reverted)))))
+              (git--update-all-state-marks repo-or-filelist)))
           ;; Refresh status buffer
           (git--if-in-status-mode (git--status-view-refresh)))
       ;; But display the [important] files don't exist / buffers refreshed

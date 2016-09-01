@@ -1027,6 +1027,8 @@ well on Mac for all git commands, and the color is useful."
   "The command that `git-run-command' ran / is running in this buffer.")
 (defvar-local git--run-command-when-done nil
   "A function to when `git-run-command' finishes.")
+(defvar-local git--run-command-rc nil
+  "The exit code of a `git-run-command' command, if finished.")
 
 (defun git-run-command (cmd &optional wait-and-error when-done recovery-link)
   "Runs a git command in a user-visible `comint-mode' buffer,
@@ -1045,7 +1047,7 @@ run long compilation hooks is not a good idea. Values other than
 
 WHEN-DONE is a callback to run when the command finishes, *whether
 success or failure*, with the buffer current. It can distinguish
-using (process-exit-status (buffer-process)). For completeness,
+using `git--run-command-rc'. For completeness,
 it's also called when WAITing although it's not the main use
 case. `git-after-working-dir-change' is an obvious candidate. 
 
@@ -1128,6 +1130,7 @@ to users with stable interface."
         (setq buffer-read-only t)
         (set-buffer-modified-p nil)
         (redisplay t)                   ; mode line etc
+        (setq git--run-command-rc (process-exit-status process))
         (when git--run-command-when-done
           (funcall git--run-command-when-done))))))
 
@@ -1298,20 +1301,24 @@ for non-remotes. It always returns REMOTE, its input."
 
 (defun git--insert-log-header-info (amend)
   "Insert the log header to the buffer. If AMEND, grab the info from the last
-commit, like git commit --amend will do once we commit."
+commit, like git commit --amend will do once we commit. If there is a
+cherry-pick in progress, use that info instead."
 
   ;; TODO: we should make git always use this info, even if its config
   ;; has changed. Otherwise this is misleading.
   (insert git--log-header-line  "\n")
-  (if amend
-      (insert (git--log "--max-count=1"
-                        (concat "--pretty=format:"
-                                "# Author : %an <%ae>%n"
-                                "# Date   : %ci%n"
-                                "# Amend  : %h%n")))
-    (insert (format "# Author : %s <%s>\n"
-                    (git--config-get-author)  (git--config-get-email))
-            "# Date   : " (git--today) "\n")))
+  (let* ((merge-op (git--find-mergelike))
+         (is-cherry-pick (string= "cherry-pick" (car merge-op))))
+    (if (or amend is-cherry-pick)       ;Info is different
+        (insert (git--log "--max-count=1"
+                          (if amend "HEAD" (cdr merge-op))
+                          (concat "--pretty=format:"
+                                  "# Author : %an <%ae>%n"
+                                  "# Date   : %ci%n"
+                                  (if amend "# Amend  : %h%n" ""))))
+      (insert (format "# Author : %s <%s>\n"
+                      (git--config-get-author)  (git--config-get-email))
+              "# Date   : " (git--today) "\n"))))
 
 ;; Internal variables for commit
 (defvar git--commit-after-hook nil
@@ -1500,8 +1507,11 @@ and the user accepts the result."
      nil t)                             ; hook is prepend, local
     ;; Add the -after function after ediff does its thing.
     (add-hook 'ediff-quit-hook
-              (lexical-let ((saved-success-callback success-callback))
-                #'(lambda () (git--resolve-merge-after saved-success-callback)))
+              (lexical-let ((saved-success-callback success-callback)
+                            (saved-result-buffer result-buffer))
+                #'(lambda ()
+                    (with-current-buffer saved-result-buffer
+                      (git--resolve-merge-after saved-success-callback))))
                 t t)
 
     (message "Please resolve conflicts now, exit ediff when done")))
@@ -2235,8 +2245,9 @@ if not nil, indicates that the branch already existed but the user okayed
                     (format question-fmt (git--bold-face branch))
                     ;; Move the suggestion from the end to the beginning.
                     (when suggested-start (list suggested-start))
-                    (when suggested-start (list suggested-start)))))
-      (list branch commit existing-commit))))
+                    (when suggested-start (list suggested-start))))
+           (commit-fresher (git--maybe-ask-for-fetch commit)))
+      (list branch commit-fresher existing-commit))))
     
 
 (defalias 'git-create-branch 'git-checkout-to-new-branch)

@@ -329,8 +329,13 @@ branch."
         (current-branch (git--current-branch)))
     (when (y-or-n-p (format "Cherry-pick commit %s on top of %s? "
                             commit (git--bold-face current-branch)))
-      (git--exec-string "cherry-pick" commit "--")
-      (git-after-working-dir-change))))
+      (git-run-command
+       (format "cherry-pick %s" commit) nil ;; asynchronous
+       #'(lambda()
+           (git-after-working-dir-change)
+           (when (and (not (eq 0 git--run-command-rc)) (git--ls-unmerged))
+             (git-merge-next-action)))
+       "HEAD")))) ;; recovery link
 
 (defun git-log-view-reset ()
   "Reset the current branch to the commit that the cursor is currently in."

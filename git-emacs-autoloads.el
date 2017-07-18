@@ -28,9 +28,17 @@
   (and vc-mode (string-match "^ Git" (substring-no-properties vc-mode))))
 
 ;; vc-hook to check whether to load git-emacs or not
-(defadvice vc-find-file-hook (after git--vc-git-find-file-hook activate)
-  "vc-find-file-hook advice for synchronizing with vc-git interface"
+(if (fboundp 'vc-refresh-state)
+    (defadvice vc-refresh-state (after git--vc-git-find-file-hook activate)
+      "vc-find-file-hook advice for synchronizing with vc-git interface"
+      
+      (when (git--in-vc-mode?) (git--update-modeline)))
+  ;; Temporary fallback for emacs < 25.1
+  (defadvice vc-find-file-hook (after git--vc-git-find-file-hook activate)
+    "vc-find-file-hook advice for synchronizing with vc-git interface"
+    
+    (when (git--in-vc-mode?) (git--update-modeline))))
 
-  (when (git--in-vc-mode?) (git--update-modeline)))
+  
 
 (provide 'git-emacs-autoloads)

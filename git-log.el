@@ -219,6 +219,9 @@ inside the repo."
   "Refreshes a git-log buffer. If called interactively or
 IS-EXPLICIT-REFRESH is set, assumes the user requested it directly."
   (interactive "p")
+  ;; Subtle: a previous git process might still be running
+  (let ((proc (get-buffer-process (current-buffer))))
+    (when proc (delete-process proc)))
   (let ((buffer-read-only nil)) (erase-buffer))
   (run-hooks 'git-log-view-before-log-hooks)
   (let* ((the-start-commit git-log-view-start-commit)
@@ -291,7 +294,7 @@ branch."
                  (select-frame
                   (make-frame-on-display
                    (unless (string= display "") display))))))
-    (when frame (x-focus-frame frame))
+    (when (and frame (display-graphic-p frame)) (x-focus-frame frame))
     (switch-to-buffer
      (git--log-view nil (when (> (length start-commit) 0) start-commit) t))
     (when frame

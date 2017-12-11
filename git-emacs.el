@@ -1059,6 +1059,7 @@ to users with stable interface."
                                            (abbreviate-file-name
                                             (git--get-top-dir))))))
     (with-current-buffer buffer
+      (setq default-directory (git--get-top-dir))
       (buffer-disable-undo)
       (setq buffer-read-only nil)
       ;; Kill existing git (e.g. waiting after password C-g). Although we
@@ -1113,7 +1114,7 @@ to users with stable interface."
           (sit-for 0.1))
         (delete-process process)        ;make sure sentinel ran
         (unless (eq 0 (process-exit-status process))
-          (error "Git %s failed" sub-cmd))
+          (user-error "Git %s failed" sub-cmd))
         (message "%sdone" msg)))
     buffer))
         
@@ -1125,10 +1126,13 @@ to users with stable interface."
         (setq mode-line-process
               (concat ": git " (if (string-prefix-p "finished" msg)
                                    "success" "failed")))
+        (setq git--run-command-rc (process-exit-status process))
+        (unless (eq 0 (process-exit-status process))
+          (require 'compile)
+          (compilation-mode "git failure output"))
         (setq buffer-read-only t)
         (set-buffer-modified-p nil)
         (redisplay t)                   ; mode line etc
-        (setq git--run-command-rc (process-exit-status process))
         (when git--run-command-when-done
           (funcall git--run-command-when-done))))))
 
@@ -1673,9 +1677,12 @@ not nil in other cases (reserved)."
 
 (defvar git-commit-button-keymap
   (git--commit-button-make-keymap "File vs commit"
+    "=" '("Diff stats" . git--commit-short-stats)
     "i" '("Stage interactively" . git--commit-add-interactively)
     "v" '("Visit file" . git--commit-visit-file)
+    "d" '("Delete file" . git--commit-delete)
     "x" '("Unstage file" . git--commit-unstage)
+    "r" '("Reset file" . git--commit-reset)
     "a" '("Add to index" . git--commit-add-to-index)
     " " '("Toggle in/out of commit" . git--commit-button-toggle)
     (kbd "RET") '("View changes" . git--commit-diff-file))
@@ -1699,6 +1706,7 @@ not nil in other cases (reserved)."
   'keymap (git--commit-button-make-keymap "Untracked file"
             "a" 'git--commit-add-to-index ;; For consistency
             "v" 'git--commit-visit-file   ;; for consistency
+            "d" '("Delete file" . git--commit-delete)
             " " '("Add to git" . git--commit-add-to-index)
             (kbd "RET") '("Visit this file". git--commit-visit-file)))
 
@@ -1742,8 +1750,9 @@ be called above the corresponding section ONLY."
                       'type 'git--commit-untracked-link))) 
 
     
-(defun git--commit-diff-file (&optional button)
-  "Click handler for filename links in the commit buffer"
+(defun git--commit-diff-file (&optional button stats-only)
+  "Click handler for filename links in the commit buffer. If `stats-only`,
+just prints diffstats."
   (interactive (list (button-at (point))))
   (with-current-buffer git--commit-log-buffer
     ; Compute rev1, rev2 inputs to diff--many
@@ -1755,18 +1764,26 @@ be called above the corresponding section ONLY."
                      (not (member file git--commit-targets)))) ;; not forced
           (if (eq (button-type button) 'git--commit-diff-committed-link)
               (setq diff-to t)          ; diff HEAD -> index
-            (setq diff-from nil))       ; diff index -> working
-        )
-      ;; Use diff--many which is much less intrusive than ediff. Reuse the
-      ;; same buffer so the user can easily look at multiple files in turn.
-      (let ((buffer
-            (git--diff-many (list file) diff-from diff-to t
-                            git--commit-last-diff-file-buffer)))
-        ;; Subtle: git-diff-many switched buffers
-        (with-current-buffer git--commit-log-buffer
-          (set (make-local-variable 'git--commit-last-diff-file-buffer)
-               buffer)))
-      )))
+            (setq diff-from nil)))       ; diff index -> working
+      (if stats-only
+          (message "%s\n %s"
+                   (if (eq (button-type button)
+                           'git--commit-diff-committed-link)
+                       "To be committed: " "Not staged:")
+                   (git--trim-string (git--exec-string
+                     "diff" (format "--stat=%d"
+                                   (window-width (minibuffer-window)))
+                     "--" file)))
+        ;; Use diff--many which is much less intrusive than ediff. Reuse the
+        ;; same buffer so the user can easily look at multiple files in turn.
+        (let ((buffer
+               (git--diff-many (list file) diff-from diff-to t
+                               git--commit-last-diff-file-buffer)))
+          ;; Subtle: git-diff-many switched buffers
+          (with-current-buffer git--commit-log-buffer
+            (set (make-local-variable 'git--commit-last-diff-file-buffer)
+                 buffer)))
+        ))))
 
 (defun git--button-keymap-help ()
   "Displays popup menu (which also functions as help) for a button keymap."
@@ -1884,6 +1901,46 @@ the file is reset to HEAD but on an amend it's HEAD^1."
       (message "Unstaged %s" file)      ; Let user see potential msg below
       (git--commit-ensure-not-forced file))
     (git-commit-refresh-status)))
+
+
+(defun git--commit-reset (&optional button)
+  "Resets a file; more precisely, checks it out again, but it's a
+reset-like operation despite git not allowing it with path)."
+  (interactive (list (or (button-at (point)) (user-error "No file here"))))
+  (let* ((file (button-label button)) (short-file (file-name-nondirectory file))
+         (commit-target (if git--commit-amend "HEAD^1" "HEAD")))
+    (when (y-or-n-p (format "Reset %s to %s (abandoning changes)? "
+                            short-file commit-target))
+      (git--reset commit-target "--" file)
+      ;; Reset may have removed the file from git.
+      (ignore-errors (git--checkout commit-target "--" file))
+      (git--update-all-state-marks (list file))
+      (message "Reset %s" file)      ; Let user see potential msg below
+      (git--commit-ensure-not-forced file))
+    (git-commit-refresh-status)))
+
+
+(defun git--commit-delete (&optional button)
+  "Offers to delete a file from the commit buffer"
+  (interactive (list (or (button-at (point)) (user-error "No file here"))))
+  (let* ((file (button-label button)) (short-file (file-name-nondirectory file))
+         (fi (or (git--status-index (list file))
+                 (git--ls-files "-o" "--" file)
+                 (error "Cannot find the current status of %s" file)))
+         (status (git--fileinfo->stat (car fi))))
+    (when (eq 'deleted status) (user-error "%s is already deleted" file))
+    (when (eq 'unknown status) (setq status "UNTRACKED"))
+    (when (y-or-n-p (format "Really delete %s (%s)? " file status))
+      (git--commit-ensure-not-forced file)
+      (delete-file file t)
+      (message "Deleted %s" file)
+      (git-commit-refresh-status))))
+  
+
+(defun git--commit-short-stats (&optional button)
+  "Prints a short diffstat about file named by BUTTON"
+  (interactive (list (or (button-at (point)) (user-error "No file here"))))
+  (git--commit-diff-file button t))
 
 
 (defun git-commit-refresh-status ()

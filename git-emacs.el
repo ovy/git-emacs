@@ -1677,6 +1677,7 @@ not nil in other cases (reserved)."
 
 (defvar git-commit-button-keymap
   (git--commit-button-make-keymap "File vs commit"
+    "q" '("Abort commit" . git--quit-buffer)
     "=" '("Diff stats" . git--commit-short-stats)
     "i" '("Stage interactively" . git--commit-add-interactively)
     "v" '("Visit file" . git--commit-visit-file)
@@ -1706,6 +1707,7 @@ not nil in other cases (reserved)."
   'keymap (git--commit-button-make-keymap "Untracked file"
             "a" 'git--commit-add-to-index ;; For consistency
             "v" 'git--commit-visit-file   ;; for consistency
+            "q" '("Abort commit" . git--quit-buffer)
             "d" '("Delete file" . git--commit-delete)
             " " '("Add to git" . git--commit-add-to-index)
             (kbd "RET") '("Visit this file". git--commit-visit-file)))
@@ -2081,10 +2083,9 @@ Returns the buffer."
       (setq cur-pos (point))
       (insert "\n\n")
       (setcdr git--commit-message-area (point-marker))
-      (unless (git-commit-refresh-status)
-        (kill-buffer nil)
-        (user-error "Nothing to commit%s"
-               (if (eq t targets) "" ", try git-commit-all")))
+      ;; Create the buffer even if nothing to commit. We can use commit buffer
+      ;; flows to add.
+      (git-commit-refresh-status)
 
         ;; Delete diff buffers when we're gone
       (add-hook 'kill-buffer-hook

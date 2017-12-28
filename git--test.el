@@ -76,15 +76,9 @@
   ;; Try some gui commits
   (let ((git--commit-log-buffer "*git commit for unittest*")
         (first-commit-id (git--rev-parse "at-first-commit"))
-        (second-commit-id nil))
+        (second-commit-id nil) (interprogram-cut-function nil))
     (unwind-protect
         (progn
-          (condition-case err
-              (progn (git-commit) (error "Expected error not raised"))
-            (error
-             (unless (string-match "^Nothing to commit"
-                                   (error-message-string err))
-               (signal (car err) (cdr err)))))
           (git-commit-all)
           (assert (equal '("-a") git--commit-args))
           (insert "another test commit")
@@ -114,7 +108,8 @@
           (insert "   \nabortive commit\n\nnay\n")
           (delete-region (point) (cdr git--commit-message-area))
           (git--quit-buffer)
-          (assert (equal "abortive commit\n\nnay" (current-kill 0)))
+          (assert (equal "abortive commit\n\nnay" (current-kill 0))
+                  nil "Kill ring was, incorrectly: %s" (current-kill 0))
           )
       (ignore-errors (kill-buffer git--commit-log-buffer))))
 

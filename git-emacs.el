@@ -2610,7 +2610,8 @@ buffer instead of a new one."
                (if rev2 (list "--cached" "-R" rev2)
                  '()))))
         (apply #'vc-do-command buffer 'async "git" nil "diff"
-               (append diff-qualifier (list "--") rel-filenames)))
+               (append diff-qualifier (list "--") rel-filenames))
+        (setq default-directory (git--get-top-dir)))
       (vc-exec-after `(goto-char (point-min))))
     (pop-to-buffer buffer)))
 

@@ -2575,6 +2575,7 @@ buffer instead of a new one."
   (unless dont-ask-save (git--maybe-ask-save files))
   (when (and (not rev1) (eq t rev2) (error "Invalid diff index->index")))
   (let* ((rel-filenames (mapcar #'file-relative-name files))
+         (started-dir default-directory)
          (friendly-rev1 (or rev1 "<index>"))
          (friendly-rev2 (if (eq t rev2) "<index>" (or rev2 "<working>")))
          (diff-buffer-name (format "*git diff: %s %s..%s*"
@@ -2587,6 +2588,7 @@ buffer instead of a new one."
          (buffer (if (buffer-live-p reuse-buffer)
                      (with-current-buffer reuse-buffer
                        (rename-buffer diff-buffer-name t)
+                       (setq default-directory started-dir)
                        reuse-buffer)
                    (get-buffer-create diff-buffer-name))))
     (with-current-buffer buffer

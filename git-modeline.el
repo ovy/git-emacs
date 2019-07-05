@@ -149,8 +149,7 @@ static char * data[] = {
   "Updates the state marks of all the buffers visiting the REPO-OR-FILELIST,
 which is a repository dir or a list of files. This is more efficient than
 doing update--state-mark for each buffer."
-  (let ((buffers (git--find-buffers repo-or-filelist)))
-    (when (and buffers git-state-modeline-decoration)
+  (when-let ((buffers (git--find-buffers repo-or-filelist)))
       ;; Use a hash table to find buffers after status-index and ls-files.
       ;; There could be many, and we're doing all these ops with no user
       ;; intervention. The hash table is filename -> (buffer . stat).
@@ -183,29 +182,32 @@ doing update--state-mark for each buffer."
               (setcdr (gethash (git--fileinfo->name fi) file-index)
                       (git--fileinfo->stat fi)))))
         ;; Now set all stats. Also handle vc-git here.
-        (let ((vc-rev nil) (vc-git-detached nil))
+        (let ((git--vc-rev nil) (git--vc-detached nil) (git--vc-symbolic-ref nil))
           ;; Copy them to all other buffers below
           (maphash #'(lambda (filename buffer-stat)
                        (when (cdr buffer-stat)
                          (with-current-buffer (car buffer-stat)
                            (setq filename (buffer-file-name)) ;in case differs
-                           (when (null vc-rev)
+                           (when (null git--vc-rev)
                              ;; Find out revision once and for all, then
                              ;; copy to all the others
                              (vc-file-setprop filename 'vc-working-revision nil)
-                             (setq vc-rev (vc-working-revision filename))
-                             (setq vc-git-detached
-                                   (vc-file-getprop filename 'vc-git-detached)))
+                             (vc-file-setprop filename 'vc-git-symbolic-ref nil)
+                             (setq git--vc-rev (vc-working-revision filename))
+                             (setq git--vc-symbolic-ref (vc-git--symbolic-ref filename))
+                             (setq git--vc-detached
+                                   (vc-file-getprop filename 'git--vc-detached)))
                            (vc-file-setprop filename
-                                            'vc-working-revision vc-rev)
+                                            'vc-working-revision git--vc-rev)
                            (vc-file-setprop filename
-                                            'vc-git-detached vc-git-detached)
+                                            'git--vc-detached git--vc-detached)
                            (vc-file-setprop filename 'vc-state
                                             (git--stat-to-vc-state
                                              (cdr buffer-stat)))
+                           (vc-file-setprop filename 'vc-git-symbolic-ref git--vc-symbolic-ref)
                            (git--update-state-mark (cdr buffer-stat))
                            (vc-mode-line filename))))
-                   file-index))))))
+                   file-index)))))
 
 (defun git--stat-to-vc-state (git-stat)
   (case git-stat

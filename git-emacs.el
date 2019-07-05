@@ -1194,7 +1194,8 @@ lexical or persistent variable bindings (i.e. not let's)"
   (let ((choice (when (zerop (git--commit-dryrun-compat nil "-a"))
                   (funcall git--completing-read
                            "Commit your pending changes first? "
-                           '("commit" "stash" "no (merge in)") nil t))))
+                           '("commit" "stash" "no (merge in)") nil t nil nil
+                           "no (merge in)")))) ;; ends up being most used
     (if (string= choice "commit")
         (with-current-buffer (git-commit-all)
           (add-hook 'git--commit-after-hook after-func t t) ; append, local
